@@ -1,0 +1,64 @@
+---
+title: "Basic SIR Model"
+author: "Claire P. Smith"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# Model specification
+
+List of current struggles:
+- Multiple infectious compartments
+    - Linking infection probabilities (v2?)
+- Rates that are functions of other rates
+- How to specify transition after a transmission event
+
+
+
+## Infection process model
+
+```{r}
+
+# Basic SIR
+inf_process <- make_infection_model(transmit("S", "I"),
+                                    transit("I", "R", gamma = 0.2))
+
+# SIRR, linked rates
+inf_process <- make_infection_model(transmit("S", "I"),
+                                    transit("I", "R1", gamma),
+                                    transit("R1", "R2", 2*gamma))
+
+# SEIR
+inf_process <- make_infection_model(transmit("S", "E", source = "I"),
+                                    transit("E", "I", sigma = 0.3),
+                                    transit("I", "R", gamma))
+
+# Multiple infection compartments
+inf_process <- make_infection_model(transmit("S", "Ia", source = c("Ia", "Is")),
+                                    transmit("S", "Is", source = c("Ia", "Is")),
+                                    transit("Ia", "R", gamma),
+                                    transit("Is", "R", gamma))
+
+inf_process <- make_infection_model(transmit("S", c("Ia", "Is"), source = c("Ia", "Is"), phi = c(0.2, 0.8)),
+                                    transit("Ia", "R", gamma),
+                                    transit("Is", "R", gamma))
+
+```
+
+
+
+Random stuff
+
+```{r}
+thing[, V3 := list(c(5, 2))]
+
+
+test <- function(...) {
+  return(environment())
+}
+
+```
