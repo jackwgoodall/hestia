@@ -1,3 +1,55 @@
+
+functions {
+  
+  // Calculate diagonal element i of matrix m
+  // Diagonal element = 1 - sum(non-diagonal elements)
+  real get_diagonal_element(matrix m, int i){
+    real out;
+    out = 1;
+    for(j in 1:rows(m)) {
+      if(j != i) {
+        out = out - m[j, i];  
+      }
+    }
+    return out;
+  }
+  
+  // function that is comparable to R's %in% function
+  // pos is the value to test for matches
+  // array pos_var is the 1-dimensional array of possible matches
+  // returns pos_match=1 if pos matches at least one element of pos_var and pos_match=0 otherwise
+  // example code: 
+  // if(r_in(3,{1,2,3,4})) will evaluate as TRUE
+  // from: https://discourse.mc-stan.org/t/stan-equivalent-of-rs-in-function/3849
+  int is_in(int pos,int[] pos_var) {
+    int pos_match;
+    int all_matches[size(pos_var)];
+    
+    for (p in 1:(size(pos_var))) {
+      all_matches[p] = (pos_var[p]==pos);
+    }
+    
+    if(sum(all_matches)>0) {
+      pos_match = 1;
+      return pos_match;
+    } else {
+      pos_match = 0;
+      return pos_match;
+    }
+  }
+  
+  // Normailze the columns of a matrix to sum to 1
+  matrix normalize_cols(matrix m) {
+    matrix[rows(m), cols(m)] out;
+  
+    for(i in 1:cols(m)) {
+      out[,i] = m[,i]/sum(m[,1]);
+    }
+    return out;
+  }
+  
+}
+
 data {
   
   // Model information
@@ -6,9 +58,12 @@ data {
   int n_inf_states; // number of infectious states
   int inf_states[n_inf_states]; // infectious states
   int n_trans_fit; // number of transitions to fit
+  int param_index[n_trans_fit]; // parameter corresponding with each non-infection transition to fit, 0 if an infection transition
   int trans_index[n_trans_fit, 2]; // row/col indices of transition matrix corresponding to each parameter to be fit
-  int inf_mult[n_trans_fit]; // foi multiplier for infection transistions
+  int source_states[n_trans_fit, n_states]; // states that are the source of infecetion of the transition (0 if non-infection transition)
+  real multiplier[n_trans_fit]; // transition multiplier
   int n_params; // number of additional (non-infection) parameters to fit
+  
   
   // Household information
   int n_hh; // number of households
@@ -63,7 +118,7 @@ transformed parameters {
     int t_day_hh[obs_per_hh[h]];
     int t_week_hh[obs_per_hh[h]];
     int index; // index for next observation
-    int i_rows[hh_size[h], n_inf_states];// rows in alpha corresponding to infectious states
+    int i_rows[hh_size[h], n_states];// rows in alpha corresponding to infectious states
     int last_lik;
     int obs_switch; // indicator for whether there is an observation corresponding to this time step
     
@@ -117,8 +172,8 @@ transformed parameters {
       for(k in 1:n_obs_type) {
         logalpha[ref, 1] = logalpha[ref, 1] + to_vector(log(obs[k,last_lik+i,]));  
       }
-      for(s in 1:n_inf_states) {
-        i_rows[i, s] = n_states*last_lik+n_states*(i-1)+inf_states[s];  
+      for(s in inf_states) {
+        i_rows[i, s] = n_states*last_lik+n_states*(i-1)+s;  
       }
       
       llik[last_lik + i, 1] = log_sum_exp(logalpha[ref,1]);
@@ -127,15 +182,13 @@ transformed parameters {
       alpha[ref, 1] = softmax(logalpha[ref,1]);
     
     } // end participant loop - t=1, update logalpha with observation probability
-
     for (tt in 2:(hh_tmax[h] - hh_tmin[h] + 1)) {
       
       for(p in 1:hh_size[h]) {
-        real no_inf_prob; // probability of avoiding all infections
-        matrix[hh_size[h], n_inf_states] no_hh_inf_prob; // probability of avoiding infection from each HH member
+        real no_inf_prob[n_states]; // probability of avoiding all infections
+        matrix[hh_size[h], n_states] no_hh_inf_prob; // probability of avoiding infection from each HH member
         int ref[n_states];
         vector[n_states] logalpha_temp; // log forward probability
-        int offset;
         
         for(k in 1:n_states) {ref[k] = n_states*last_lik+n_states*(p-1)+k;}
         logalpha_temp = logalpha[ref,tt-1];
@@ -164,28 +217,39 @@ transformed parameters {
           index = min(index + 1, hh_end_ind[h]-hh_start_ind[h]+1);  
         }
         
-        for(s in 1:n_inf_states) {
-          no_hh_inf_prob[,s] = to_vector(alpha[i_rows[, s], tt-1])*(1-ih_prob) + (1 - to_vector(alpha[i_rows[,s], tt-1])); // Pr of avoiding infection from within the home 
-          no_hh_inf_prob[p, s] = 1; // Particpant can't infect themselves  
+        for(s in 1:n_states) {
+          if(is_in(s, inf_states)) {
+            no_hh_inf_prob[,s] = to_vector(alpha[i_rows[, s], tt-1])*(1-ih_prob) + (1 - to_vector(alpha[i_rows[,s], tt-1])); // Pr of avoiding infection from each household member
+            no_hh_inf_prob[p, s] = 1; // Particpant can't infect themselves  
+          } else {
+            no_hh_inf_prob[,s] = rep_vector(1, hh_size[h]); 
+          }
+          no_inf_prob[s] = prod(no_hh_inf_prob[,s]); // Probability of avoiding infection from all household members
         }
-        no_inf_prob = (1-eh_prob)*prod(no_hh_inf_prob); // Pr avoiding all infections
-        
-        offset = 0;
         
         // fill in tranistions that are being fit
         for(m in 1:n_trans_fit) {
-          if(inf_mult[m] == 0) {
-            trans_temp[trans_index[m, 1],trans_index[m, 2]] = params[m-offset];
+          if(sum(source_states[m,]) == 0) {
+            trans_temp[trans_index[m, 1],trans_index[m, 2]] = params[param_index[m]]*multiplier[m];
           } else {
-            trans_temp[trans_index[m, 1],trans_index[m, 2]] = (1-no_inf_prob)*inf_mult[m];
-            offset = offset + 1;
+            real no_inf = 1;
+            for(s in 1:n_states) {
+              if(source_states[m,s] == 1) {
+                no_inf = no_inf*no_inf_prob[s];
+              }
+            }
+            trans_temp[trans_index[m, 1],trans_index[m, 2]] = (1-no_inf)*(1-eh_prob)*multiplier[m];
           }
         }
 
-        // fill in diagonals
+        // fill in diagonals (columns must sum to one)
+        for(i in 1:cols(trans_temp)) {
+          trans_temp[i,i] = get_diagonal_element(trans_temp, i);
+        }
+        
         
         // normalize
-        
+        trans_temp = normalize_cols(trans_temp);
         
         // Compute the probability of each epidemiological state
         logalpha[ref, tt] = log(trans_temp*exp(logalpha_temp));

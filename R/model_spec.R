@@ -7,7 +7,7 @@ library(tidyverse)
 #' @param from string giving name of origin compartment
 #' @param to string giving the name of the destination compartment
 #'
-transit <- function(from, to, rate, ...) {
+transit <- function(from, to, ...) {
   
   .dots <- unlist(list(...))
   
@@ -17,12 +17,8 @@ transit <- function(from, to, rate, ...) {
                     rate_name = NA,
                     rate_value = NA)
   
-  if(is.numeric(.dots) == 1) {
-    out$rate_name <- names(.dots)
-    out$rate_value <- .dots
-  } else {
-    out$rate_name <- deparse(substitute(rate))
-  }
+  out$rate_name <- names(.dots)
+  out$rate_value <- .dots
   
   return(out)
   
@@ -35,15 +31,13 @@ transit <- function(from, to, rate, ...) {
 #' @param to string giving the name of the destination compartment
 #' @param source string (or vector of strings) designating which compartments are infectious. If NULL, the destination compartment is presumed to be the infectious compartment.
 #'
-transmit <- function(from, to, source = NULL, ...) {
-  
-  
+transmit <- function(from, to, source = NA) {
   
   out <- data.frame(from = from,
                     to = to,
-                    source = ifelse(is.null(source), to, source),
                     rate_name = NA,
                     rate_value = NA)
+  out$source <- ifelse(sum(is.na(source))>0, to, list(source))
   
   return(out)
   
@@ -65,7 +59,10 @@ make_infection_model <- function(..., ih_cov = FALSE, eh_cov = FALSE) {
   
 }
 
-
+#' Creates transmission probability matrix, 
+#' 
+#' @param inf_model infection process model object yielded by make_infection_model()
+#'
 get_tranmission_details <- function(inf_model) {
   states <- unique(c(inf_model$from, inf_model$to))
   trans <- matrix(1e-10, nrow = length(states), ncol = length(states))
@@ -73,30 +70,55 @@ get_tranmission_details <- function(inf_model) {
   colnames(trans) <- paste("from", states, sep = "_")
   
   trans_to_fit <- data.frame(from = character(),
-                              to = character(),
-                              trans_row = numeric(),
-                              trans_col = numeric(),
-                              source = numeric(),
-                              rate_name = character())
+                             to = character(),
+                             trans_row = numeric(),
+                             trans_col = numeric(),
+                             source = list(),
+                             rate_name = character(),
+                             param = numeric())
   
   for(i in 1:nrow(inf_model)) {
     if(!is.na(inf_model$rate_value[i])) {
       trans[states == inf_model$to[i],states == inf_model$from[i]] <- inf_model$rate_value[i]
     } else {
-      trans_to_fit <- bind_rows(trans_to_fit,
-                                 data.frame(from = inf_model$from[i],
-                                            to = inf_model$to[i],
-                                            trans_row = which(states == inf_model$to[i]),
-                                            trans_col = which(states == inf_model$from[i]),
-                                            source = ifelse(is.na(inf_model$source[i]), 0 , which(states == inf_model$source[i])),
-                                            rate_name = inf_model$rate_name[i]))
+      temp <- data.frame(from = inf_model$from[i],
+                         to = inf_model$to[i],
+                         trans_row = which(states == inf_model$to[i]),
+                         trans_col = which(states == inf_model$from[i]),
+                         rate_name = inf_model$rate_name[i],
+                         param = NA)
+      temp$source <- ifelse(is.null(inf_model$source[i][[1]]), list(0) , list(which(states %in% inf_model$source[i][[1]])))
+      trans_to_fit <- bind_rows(trans_to_fit, temp)
     }
   }
 
+  if(sum(!is.na(trans_to_fit$rate_name)) > 0) {
+    fac_levels <- unique(trans_to_fit$rate_name[!is.na(trans_to_fit$rate_name)])
+    trans_to_fit$param <- as.numeric(factor(trans_to_fit$rate_name, levels = fac_levels))
+  }
+  trans_to_fit <- trans_to_fit %>%
+    mutate(param = replace_na(param, 0))
   
-  
-  return(list(trans_matrix = trans,
+  return(list(states = states,
+              trans_matrix = trans,
               trans_to_fit = trans_to_fit,
-              inf_states = trans_to_fit$source[is.na(trans_to_fit$rate_name)]))
+              inf_states = unique(unlist(trans_to_fit$source[is.na(trans_to_fit$rate_name)]))))
+}
+
+
+make_observation_model <- function(...) {
+  .dots <- list(...)
+  
+  ops <- list()
+  for(i in 1:length(.dots)) {
+    op <- matrix(nrow = 2, ncol = length(.dots[[i]]))
+    op[1,] <- 1-.dots[[i]]
+    op[2,] <- .dots[[i]]
+    rownames(op) <- c("neg_obs", "pos_obs")
+    colnames(op) <- names(.dots[[i]])
+    ops[[i]] <- op
+  }
+  names(ops) <- names(.dots)
+  return(ops)
 }
 
