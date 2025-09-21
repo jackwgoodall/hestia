@@ -122,3 +122,91 @@ make_observation_model <- function(...) {
   return(ops)
 }
 
+make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10) {
+  
+  inf_details <- get_tranmission_details(inf_model)
+  dat <- data %>%
+    arrange(hh_id, t, part_id)
+  
+  hh_sum <- dat %>%
+    group_by(hh_id, hh_size) %>%
+    summarize(hh_start_ind = min(row_id),
+              hh_end_ind = max(row_id),
+              hh_tmin = min(t),
+              hh_tmax = max(t),
+              obs_per_hh = n()) %>%
+    ungroup()
+  
+  source_state_matrix <- matrix(0, nrow = nrow(inf_details$trans_to_fit), ncol = length(inf_details$states))
+  for(i in 1:nrow(inf_details$trans_to_fit)) {
+    if(any(inf_details$trans_to_fit$source[[i]] == 0)) {
+      next
+    } else {
+      source_state_matrix[i,inf_details$trans_to_fit$source[[i]]] <- 1
+    }
+  }
+  
+  obs_array <- array(dim = c(length(obs_model),2, length(inf_details$states)))
+  for(i in 1:length(obs_model)) {
+    obs_array[i,,] <- obs_process[[i]]
+  }
+  
+  # TODO: deal with missing observations (change NA to -1)
+
+  dat_stan <- list(n_states = length(inf_details$states),
+                   trans = inf_details$trans_matrix,
+                   n_inf_states = length(inf_details$inf_states),
+                   inf_states = array(inf_details$inf_states),
+                   n_trans_fit = nrow(inf_details$trans_to_fit),
+                   param_index = array(inf_details$trans_to_fit$param),
+                   trans_index = inf_details$trans_to_fit %>% select(trans_row, trans_col),
+                   source_states = source_state_matrix,
+                   multiplier = array(rep(1, nrow(inf_details$trans_to_fit))), #TODO: update user input to support multipliers that aren't 1
+                   n_params = length(unique(inf_details$trans_to_fit$param[inf_details$trans_to_fit$param != 0])),
+                   n_hh = max(dat$hh_id),
+                   hh_size = hh_sum$hh_size,
+                   n_obs = nrow(dat),
+                   n_obs_type = length(obs_process), 
+                   n_unique_obs = 2, #TODO: allow multi-level outcomes
+                   y = dat %>% select(names(obs_model)) + 1,
+                   part_id = dat$part_id,
+                   t_day = dat$t,
+                   obs_per_hh = hh_sum$obs_per_hh,
+                   hh_start_ind = hh_sum$hh_start_ind,
+                   hh_end_ind = hh_sum$hh_end_ind,
+                   hh_tmin = hh_sum$hh_tmin,
+                   hh_tmax = hh_sum$hh_tmax,
+                   obs_prob = obs_array,
+                   init_probs = init_probs, #TODO: Toggle to fit
+                   epsilon = epsilon)
+  
+  return(dat_stan)
+  
+}
+
+# TODO: option to save state probabilities
+# TODO: create processed model results
+run_model <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10,
+                      file = "stan/hmm.stan",
+                      iter = 2000, chains = 4, cores = getOption("mc.cores", 1L),
+                      save_chains = FALSE) {
+  dat_stan <- make_stan_data(inf_model, obs_model, data, init_probs, epsilon)
+  
+  stan_fit <- stan(file = file,
+                   data = dat_stan,
+                   iter = iter,
+                   chains = chains,
+                   cores = cores)
+  
+  if(save_chains) {
+    ch <- rstan::extract(stan_fit)
+  } else {
+    ch <- NULL
+  }
+  
+}
+
+
+
+
+
