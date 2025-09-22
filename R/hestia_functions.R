@@ -207,15 +207,35 @@ run_model <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10,
                    chains = chains,
                    cores = cores)
   
-  if(save_chains) {
-    ch <- rstan::extract(stan_fit)
-  } else {
-    ch <- NULL
-  }
+  ch <- rstan::extract(stan_fit)
+
+  res <- bind_rows(summarize_chains(ch, "ih_prob"),
+                   summarize_chains(ch, "eh_prob"))
+  
+  return(list(res = res,
+              chains = if(save_chains){ch} else {null}))
   
 }
 
-
+# TODO: handle multi-dimensional parameters
+summarize_chains <- function(ch, param, quantiles = c(0.025, 0.975)) {
+  ch_param <- ch[[param]]
+  
+  # Get mean an median
+  out <- data.frame(param = param, mean = mean(ch_param), median = median(ch_param))
+  
+  # Calculate additional quantiles
+  qs <- list()
+  for(i in 1:length(quantiles)) {
+    qs[[i]] <- data.frame(x = quantile(ch_param, quantiles[i]))
+    names(qs[[i]]) <- paste0("quatile_", quantiles[i])
+  }
+  qs <- bind_cols(qs)
+  out <- bind_cols(out, qs)
+  rownames(out) <- NULL
+  
+  return(out)
+}
 
 
 
