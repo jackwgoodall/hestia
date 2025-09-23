@@ -185,7 +185,7 @@ for(h in 1:n_hh) { # Loop through households
                 no_inf = no_inf*no_inf_prob[s]
               }
             }
-            trans_temp[trans_index[m, 1],trans_index[m, 2]] = (1-no_inf)*(1-eh_prob)*multiplier[m]
+            trans_temp[trans_index[m, 1],trans_index[m, 2]] = 1-(no_inf*(1-eh_prob))*multiplier[m]
           }
         }
 

@@ -48,7 +48,22 @@ functions {
     return out;
   }
   
+  matrix replace_zeroes(matrix m, real epsilon) {
+  
+  matrix[rows(m), cols(m)] out;
+  out = m;
+  for(i in 1:rows(m)) {
+    for(j in 1:cols(m)) {
+      if(m[i,j] == 0) {
+        out[i,j] = epsilon;
+      }
+    }
+  }
+  return(out);
 }
+  
+}
+
 
 data {
   
@@ -97,22 +112,20 @@ parameters {
 }
 
 transformed parameters {
-  matrix[sum(hh_size), max(hh_tmax)-min(hh_tmin) + 1] llik; // lik contribution for enrolled per participant and time
   vector[n_hh] llik_final; // sum of logalpha for final timestep
   real ih_prob;
   real eh_prob;
   matrix[sum(hh_size)*n_states, max(hh_tmax)-min(hh_tmin) + 1] logalpha; // log forward probability
-  matrix[sum(hh_size)*n_states, max(hh_tmax)-min(hh_tmin) + 1] alpha; // forward prob, normalized
-  matrix[sum(hh_size), n_states] obs[n_obs_type]; // observation component for enrolled memebrs, set to 1 if no observation for this time step
   matrix[n_states, n_states] trans_temp;
   
-  llik = rep_matrix(0, sum(hh_size), max(hh_tmax)-min(hh_tmin) + 1);
   ih_prob = inv_logit(beta_ih);
   eh_prob = inv_logit(beta_eh);
   trans_temp = trans;
   
   for(h in 1:n_hh) { // loop through household
     
+    matrix[hh_size[h], max(hh_tmax)-min(hh_tmin) + 1] alpha; // forward prob, normalized
+    matrix[hh_size[h], max(hh_tmax)-min(hh_tmin) + 1] llik; // lik contribution for enrolled per participant and time
     int y_hh[obs_per_hh[h], n_obs_type];
     int part_id_hh[obs_per_hh[h]];
     int t_day_hh[obs_per_hh[h]];
@@ -121,6 +134,8 @@ transformed parameters {
     int i_rows[hh_size[h], n_states];// rows in alpha corresponding to infectious states
     int last_lik;
     int obs_switch; // indicator for whether there is an observation corresponding to this time step
+    
+    llik = rep_matrix(0, hh_size[h], max(hh_tmax)-min(hh_tmin) + 1);
     
     if(h == 1) {
       last_lik = 0;
@@ -140,8 +155,9 @@ transformed parameters {
     // fill first column of alpha using starting probabilities
     for(i in 1:hh_size[h]) {
       int ref[n_states];
+      matrix[n_obs_type, n_states] obs; // observation component for enrolled memebrs, set to 1 if no observation for this time step
     
-      for(k in 1:n_states) {ref[k] = n_states*last_lik+n_states*(i-1)+k;} 
+      ref = linspaced_int_array(n_states, n_states*last_lik+n_states*(i-1)+1, n_states*last_lik+n_states*(i-1)+n_states);
       
       obs_switch = 0; 
       
@@ -154,13 +170,13 @@ transformed parameters {
       if(obs_switch == 1) {
         for(k in 1:n_obs_type) {
           if(y_hh[index, k] != -1) {
-            obs[k, last_lik+i, ] = obs_prob[k, y_hh[index, k],];
+            obs[k, ] = obs_prob[k, y_hh[index, k],];
           } else {
-            obs[k, last_lik+i, ] = rep_row_vector(1, n_states);
+            obs[k, ] = rep_row_vector(1, n_states);
           }
         }
       } else {
-        obs[,last_lik+i,] = rep_array(rep_row_vector(1, n_states), n_obs_type);
+        obs = rep_matrix(1, n_obs_type, n_states);
       }
         
       if(obs_switch == 1) {
@@ -170,16 +186,16 @@ transformed parameters {
       // Fill in starting probability for SIR states
       logalpha[ref, 1] = log(init_probs);
       for(k in 1:n_obs_type) {
-        logalpha[ref, 1] = logalpha[ref, 1] + to_vector(log(obs[k,last_lik+i,]));  
+        logalpha[ref, 1] = logalpha[ref, 1] + to_vector(log(obs[k,]));  
       }
       for(s in inf_states) {
-        i_rows[i, s] = n_states*last_lik+n_states*(i-1)+s;  
+        i_rows[i, s] = n_states*(i-1)+s;  
       }
       
       llik[last_lik + i, 1] = log_sum_exp(logalpha[ref,1]);
       
       // normalize and convert to the probability scale
-      alpha[ref, 1] = softmax(logalpha[ref,1]);
+      alpha[(n_states*(i-1)+1):(n_states*(i-1)+1), 1] = softmax(logalpha[ref,1]);
     
     } // end participant loop - t=1, update logalpha with observation probability
     for (tt in 2:(hh_tmax[h] - hh_tmin[h] + 1)) {
@@ -189,8 +205,10 @@ transformed parameters {
         matrix[hh_size[h], n_states] no_hh_inf_prob; // probability of avoiding infection from each HH member
         int ref[n_states];
         vector[n_states] logalpha_temp; // log forward probability
+        matrix[n_obs_type, n_states] obs;
         
-        for(k in 1:n_states) {ref[k] = n_states*last_lik+n_states*(p-1)+k;}
+        ref = linspaced_int_array(n_states, n_states*last_lik+n_states*(p-1)+1, n_states*last_lik+n_states*(p-1)+n_states);
+        
         logalpha_temp = logalpha[ref,tt-1];
         
         obs_switch = 0; 
@@ -204,13 +222,13 @@ transformed parameters {
         if(obs_switch == 1) {
           for(k in 1:n_obs_type) {
             if(y_hh[index, k] != -1) {
-              obs[k,last_lik+p,] = obs_prob[k, y_hh[index, k], ];
+              obs[k,] = obs_prob[k, y_hh[index, k], ];
             } else {
-              obs[k,last_lik+p,] = rep_row_vector(1, n_states);
+              obs[k,] = rep_row_vector(1, n_states);
             }
           }
         } else {
-          obs[,last_lik+p,] = rep_array(rep_row_vector(1, n_states), n_obs_type);
+          obs = rep_matrix(1, n_obs_type, n_states);
         }
         
         if(obs_switch == 1) {
@@ -238,7 +256,7 @@ transformed parameters {
                 no_inf = no_inf*no_inf_prob[s];
               }
             }
-            trans_temp[trans_index[m, 1],trans_index[m, 2]] = (1-no_inf)*(1-eh_prob)*multiplier[m];
+            trans_temp[trans_index[m, 1],trans_index[m, 2]] = 1-(no_inf*(1-eh_prob))*multiplier[m];
           }
         }
 
@@ -247,25 +265,25 @@ transformed parameters {
           trans_temp[i,i] = get_diagonal_element(trans_temp, i);
         }
         
-        
-        // normalize
+        // replace zeroes with epsilon and normalize
+        trans_temp = replace_zeroes(trans_temp, epsilon);
         trans_temp = normalize_cols(trans_temp);
         
         // Compute the probability of each epidemiological state
         logalpha[ref, tt] = log(trans_temp*exp(logalpha_temp));
         for(k in 1:n_obs_type) {
-          logalpha[ref, tt] = logalpha[ref, tt] + to_vector(log(obs[k,last_lik+p,]));
+          logalpha[ref, tt] = logalpha[ref, tt] + to_vector(log(obs[k,]));
         }
         
         // normalize and convert to probability scale
-        alpha[ref, tt] = softmax(logalpha[ref,tt]);
+        alpha[(n_states*(p-1)+1):(n_states*(p-1)+n_states), tt] = softmax(logalpha[ref,tt]);
         
-        llik[last_lik + p, tt] = log_sum_exp(logalpha[ref,tt]);
+        llik[p, tt] = log_sum_exp(logalpha[ref,tt]);
         
       } // end participant loop - update logalpha with observation probability
       
       if(tt == (hh_tmax[h] - hh_tmin[h] + 1)) {
-        llik_final[h] = sum(llik[(last_lik+1):(last_lik+hh_size[h]),tt]); 
+        llik_final[h] = sum(llik[,tt]); 
       }
         
     } // end time loop
