@@ -1,5 +1,14 @@
 
 library(tidyverse)
+library(rstan)
+
+logit <- function(x) {
+  log(x/(1-x))
+}
+
+inv_logit <- function(x) {
+  exp(x)/(1+exp(x))
+}
 
 #' Defines a state transition in the infection process model which does not
 #' represent an transmission (infection) event
