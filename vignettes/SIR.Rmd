@@ -6,8 +6,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-source("../R/model_spec.R")
-source("../R/model_processing.R")
+source("../R/hestia_functions.R")
 source("../R/simulation.R")
 
 library(rstan)
@@ -42,7 +41,7 @@ Define the infection process model, which includes the latent staes and transmis
 # Basic SIR
 # For now let's set the value of gamma
 inf_process <- make_infection_model(transmit("S", "I"),
-                                    transit("I", "R", gamma = 0.2))
+                                    transit("I", "R", gamma = NA))
 
 inf_process
 get_tranmission_details(inf_process) # for now, to check internal structure
