@@ -137,6 +137,7 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
   dat <- data %>%
     arrange(hh_id, t, part_id)
   
+  dat$row_id <- 1:nrow(dat)
   hh_sum <- dat %>%
     group_by(hh_id, hh_size) %>%
     summarize(hh_start_ind = min(row_id),

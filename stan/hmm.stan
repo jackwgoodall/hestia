@@ -124,12 +124,11 @@ transformed parameters {
   
   for(h in 1:n_hh) { // loop through household
     
-    matrix[hh_size[h], max(hh_tmax)-min(hh_tmin) + 1] alpha; // forward prob, normalized
+    matrix[hh_size[h]*n_states, max(hh_tmax)-min(hh_tmin) + 1] alpha; // forward prob, normalized
     matrix[hh_size[h], max(hh_tmax)-min(hh_tmin) + 1] llik; // lik contribution for enrolled per participant and time
     int y_hh[obs_per_hh[h], n_obs_type];
     int part_id_hh[obs_per_hh[h]];
     int t_day_hh[obs_per_hh[h]];
-    int t_week_hh[obs_per_hh[h]];
     int index; // index for next observation
     int i_rows[hh_size[h], n_states];// rows in alpha corresponding to infectious states
     int last_lik;
@@ -192,10 +191,10 @@ transformed parameters {
         i_rows[i, s] = n_states*(i-1)+s;  
       }
       
-      llik[last_lik + i, 1] = log_sum_exp(logalpha[ref,1]);
+      llik[i, 1] = log_sum_exp(logalpha[ref,1]);
       
       // normalize and convert to the probability scale
-      alpha[(n_states*(i-1)+1):(n_states*(i-1)+1), 1] = softmax(logalpha[ref,1]);
+      alpha[(n_states*(i-1)+1):(n_states*(i-1)+n_states), 1] = softmax(logalpha[ref,1]);
     
     } // end participant loop - t=1, update logalpha with observation probability
     for (tt in 2:(hh_tmax[h] - hh_tmin[h] + 1)) {

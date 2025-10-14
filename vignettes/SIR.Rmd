@@ -6,8 +6,12 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+<<<<<<< Updated upstream
 source("../R/hestia_functions.R")
+=======
+>>>>>>> Stashed changes
 source("../R/simulation.R")
+source("../R/hestia_functions.R")
 
 library(rstan)
 library(tidyverse)
