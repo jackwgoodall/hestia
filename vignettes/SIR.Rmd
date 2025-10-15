@@ -6,19 +6,17 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-<<<<<<< Updated upstream
 source("../R/hestia_functions.R")
-=======
->>>>>>> Stashed changes
 source("../R/simulation.R")
-source("../R/hestia_functions.R")
 
 library(rstan)
 library(tidyverse)
 
 ```
 
-# Simulate some data from a basic SIR model
+# SIR model
+
+## Simulate some data from a basic SIR model
 
 ```{r}
 
@@ -34,9 +32,13 @@ dat_sim <- sim_sir(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
                    start_prob = c(1, 0, 0),
                    complete_enroll = TRUE)
 
+# Name courcome columns
+dat <- dat_sim$obs %>%
+  rename(pcr = y1, igg = y2)
+
 ```
 
-# Model specification
+## Model specification
 
 Define the infection process model, which includes the latent staes and transmission probabilities.
 
@@ -67,74 +69,15 @@ Get data into stan format. (This will be put into a function once I make sure it
 ## Inputs
 # 1. Infection process model
 # 2. Observation process model
-# 3. Raw data
 
-inf_details <- get_tranmission_details(inf_process)
-dat <- dat_sim$obs %>%
-  rename(pcr = y1,
-         igg = y2) %>%
-  arrange(hh_id, t, part_id)
-
-dat$row_id <- 1:nrow(dat)
-hh_sum <- dat %>%
-  group_by(hh_id, hh_size) %>%
-  summarize(hh_start_ind = min(row_id),
-            hh_end_ind = max(row_id),
-            hh_tmin = min(t),
-            hh_tmax = max(t),
-            obs_per_hh = n()) %>%
-  ungroup()
-
-source_state_matrix <- matrix(0, nrow = nrow(inf_details$trans_to_fit), ncol = length(inf_details$states))
-for(i in 1:nrow(inf_details$trans_to_fit)) {
-  if(any(inf_details$trans_to_fit$source[[i]] == 0)) {
-    next
-  } else {
-    source_state_matrix[i,inf_details$trans_to_fit$source[[i]]] <- 1
-  }
-}
-
-obs_array <- array(dim = c(2,2,3))
-obs_array[1,,] <- obs_process$pcr
-obs_array[2,,] <- obs_process$igg
-
-epsilon <- 1e-10
-
-dat_stan <- list(n_states = length(inf_details$states),
-                 trans = inf_details$trans_matrix,
-                 n_inf_states = length(inf_details$inf_states),
-                 inf_states = array(inf_details$inf_states),
-                 n_trans_fit = nrow(inf_details$trans_to_fit),
-                 param_index = array(inf_details$trans_to_fit$param),
-                 trans_index = inf_details$trans_to_fit %>% select(trans_row, trans_col),
-                 source_states = source_state_matrix,
-                 multiplier = array(rep(1, nrow(inf_details$trans_to_fit))), #TODO: update user input to support multipliers that aren't 1
-                 n_params = length(unique(inf_details$trans_to_fit$param[inf_details$trans_to_fit$param != 0])),
-                 n_hh = max(dat$hh_id),
-                 hh_size = hh_sum$hh_size,
-                 n_obs = nrow(dat),
-                 n_obs_type = length(obs_process), 
-                 n_unique_obs = 2, #TODO: allow multi-level outcomes
-                 y = dat %>% select(names(obs_process)) + 1,
-                 part_id = dat$part_id,
-                 t_day = dat$t,
-                 obs_per_hh = hh_sum$obs_per_hh,
-                 hh_start_ind = hh_sum$hh_start_ind,
-                 hh_end_ind = hh_sum$hh_end_ind,
-                 hh_tmin = hh_sum$hh_tmin,
-                 hh_tmax = hh_sum$hh_tmax,
-                 obs_prob = obs_array,
-                 init_probs = c(1-2*epsilon, epsilon, epsilon), #TODO: Toggle to fit
-                 epsilon = epsilon)
-
-stan_fit <- stan(file = "../stan/hmm.stan",
-                 data = dat_stan,
-                 iter = 1000,
-                 chains = 4)
+res_stan <- run_model(inf_model = inf_process, obs_model = obs_process,
+                      data = dat, init_probs = c(1-2*1e-10, 1e-10, 1e-10),
+                      iter = 1000, cores = 4, save_chains = TRUE,
+                      file = "../stan/hmm.stan")
 
 
 ```
 
-
+## SIR model with separate compartments for symptomatic and symptomatic infection
 
 

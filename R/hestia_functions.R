@@ -197,16 +197,26 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
 # TODO: option to save state probabilities
 # TODO: create processed model results
 run_model <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10,
-                      file = "stan/hmm.stan",
-                      iter = 2000, chains = 4, cores = getOption("mc.cores", 1L),
+                      file = "stan/hmm.stan", iter = 2000, chains = 4,
+                      cores = getOption("mc.cores", 1L), init = NULL,
                       save_chains = FALSE) {
+  
   dat_stan <- make_stan_data(inf_model, obs_model, data, init_probs, epsilon)
+  
+  if(is.null(init)) {
+    init = rep(list(list(logit_params = array(rep(logit(0.5), dat_stan$n_params)),
+                         beta_eh = logit(0.02),
+                         beta_ih = logit(0.02))), 4)
+  } else {
+    init <- rep(list(init), 4)
+  }
   
   stan_fit <- stan(file = file,
                    data = dat_stan,
                    iter = iter,
                    chains = chains,
-                   cores = cores)
+                   cores = cores,
+                   init = init)
   
   ch <- rstan::extract(stan_fit)
 

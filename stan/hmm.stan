@@ -105,7 +105,7 @@ data {
 }
 
 parameters {
-  real params[n_params];
+  real logit_params[n_params];
   real beta_eh; // monthly intercepts for extra-household probabilities
   real beta_ih; // intra-household probability
 
@@ -117,7 +117,9 @@ transformed parameters {
   real eh_prob;
   matrix[sum(hh_size)*n_states, max(hh_tmax)-min(hh_tmin) + 1] logalpha; // log forward probability
   matrix[n_states, n_states] trans_temp;
+  real params[n_params];
   
+  params = inv_logit(logit_params);
   ih_prob = inv_logit(beta_ih);
   eh_prob = inv_logit(beta_eh);
   trans_temp = trans;

@@ -24,6 +24,19 @@ normalize_cols <- function(m){
   return(out)
 }
 
+replace_zeroes <- function(m, epsilon) {
+
+  out = m
+  for(i in 1:nrow(m)) {
+    for(j in 1:ncol(m)) {
+      if(m[i,j] == 0) {
+        out[i,j] = epsilon
+      }
+    }
+  }
+  return(out)
+}
+
 ################# DATA ##########################################
 {n_states <- dat_stan$n_states
 trans <- dat_stan$trans
@@ -58,10 +71,9 @@ beta_eh <- logit(0.01)
 beta_ih <- logit(0.05)
 
 ############## TRANSFORMED PARAMETERS ##############################
-llik <- matrix(0, nrow = sum(hh_size), ncol = max(hh_tmax)-min(hh_tmin) + 1) # lik contribution for enrolled per participant and time
+
 llik_final <- numeric(n_hh) # sum of logalpha for final timestep
 logalpha <- matrix(nrow = sum(hh_size)*n_states, ncol = max(hh_tmax)-min(hh_tmin) + 1) # log forward probability
-alpha <- matrix(nrow = sum(hh_size)*n_states, ncol = max(hh_tmax)-min(hh_tmin) + 1) # forward prob, normalized
 obs <- array(dim = c(n_obs_type, sum(hh_size), n_states)) # observation component for enrolled memebrs, set to 1 if no observation for this time step
 trans_temp <- matrix(nrow = n_states, ncol = n_states) 
 
@@ -69,9 +81,14 @@ ih_prob <- inv_logit(beta_ih)
 eh_prob <- inv_logit(beta_eh)
 trans_temp <- trans
 
-for(h in 1:n_hh) { # Loop through households
+
+for(h in 1:n_hh) { # loop through household
   
-  i_rows <- matrix(0,nrow = hh_size[h], ncol = n_states)
+  llik <- matrix(0, nrow = hh_size[h], ncol = max(hh_tmax)-min(hh_tmin) + 1) # lik contribution for enrolled per participant and time
+  alpha <- matrix(nrow = hh_size[h]*n_states, ncol = max(hh_tmax)-min(hh_tmin) + 1) # forward prob, normalized
+  i_rows <- matrix(nrow = hh_size[h], ncol = n_states)# rows in alpha corresponding to infectious states
+  
+  llik = matrix(0, nrow = hh_size[h], ncol = max(hh_tmax)-min(hh_tmin) + 1)
   
   if(h == 1) {
     last_lik = 0
@@ -79,71 +96,25 @@ for(h in 1:n_hh) { # Loop through households
     last_lik = sum(hh_size[1:(h-1)])
   }
   
-  # Subset to data only for the given HH
+  # subset to data only for the given HH
   y_hh = y[(hh_start_ind[h]):(hh_end_ind[h]),]
   t_day_hh = t_day[(hh_start_ind[h]):(hh_end_ind[h])]
   part_id_hh = part_id[(hh_start_ind[h]):(hh_end_ind[h])]
   
   index = 1
   
-  for(i in 1:hh_size[h]) { # Loop through participants for t = 1
-    ref <- numeric(n_states)
+  { # START FORWARD ALGORITHM
     
-    for(k in 1:n_states) {ref[k] = n_states*last_lik+n_states*(i-1)+k} 
-    
-    obs_switch = 0 
-    
-    if(t_day_hh[index] == 1) {
-      if(part_id_hh[index] == i) {
-        obs_switch = 1
-      }
-    }
-    
-    if(obs_switch == 1) {
-      for(k in 1:n_obs_type) {
-        if(y_hh[index, k] != -1) {
-          obs[k, last_lik+i, ] = obs_prob[k, y_hh[index, k],]
-        } else {
-          obs[k, last_lik+i, ] = rep_row_vector(1, n_states)
-        }
-      }
-    } else {
-      obs[,last_lik+i,] = 1
-    }
-    
-    if(obs_switch == 1) {
-      index = min(index + 1, hh_end_ind[h]-hh_start_ind[h]+1)  
-    }
-    
-    # Fill in starting probability for SIR states
-    logalpha[ref, 1] = log(init_probs)
-    for(k in 1:n_obs_type) {
-      logalpha[ref, 1] = logalpha[ref, 1] + log(obs[k,last_lik+i,])
-    }
-    for(s in inf_states) {
-      i_rows[i, s] = n_states*last_lik+n_states*(i-1)+s  
-    }
-    
-    llik[last_lik + i, 1] = log(sum(exp(logalpha[ref,1])))
-    
-    # normalize and convert to the probability scale
-    alpha[ref, 1] = softmax(logalpha[ref,1])
-    
-  } # End participant loop for t = 1
-  
-  for (tt in 2:(hh_tmax[h] - hh_tmin[h] + 1)) {
-    for(p in 1:hh_size[h]) {
-      no_inf_prob <- numeric(n_states) # probability of avoiding all infections
-      no_hh_inf_prob <- matrix(nrow = hh_size[h], ncol = n_states) # probability of avoiding infection from each HH member
-      ref <- numeric(n_states)
+    # fill first column of alpha using starting probabilities
+    for(i in 1:hh_size[h]) {
+      obs <- matrix(nrow = n_obs_type, ncol = n_states) # observation component for enrolled memebrs, set to 1 if no observation for this time step
       
-      for(k in 1:n_states) {ref[k] = n_states*last_lik+n_states*(p-1)+k}
-      logalpha_temp = logalpha[ref,tt-1]
+      ref = n_states*last_lik+n_states*(i-1)+1:n_states
       
       obs_switch = 0 
       
-      if(t_day_hh[index] == tt) {
-        if(part_id_hh[index] == p) {
+      if(t_day_hh[index] == 1) {
+        if(part_id_hh[index] == i) {
           obs_switch = 1
         }
       }
@@ -151,23 +122,74 @@ for(h in 1:n_hh) { # Loop through households
       if(obs_switch == 1) {
         for(k in 1:n_obs_type) {
           if(y_hh[index, k] != -1) {
-            obs[k,last_lik+p,] = obs_prob[k, y_hh[index, k], ]
+            obs[k, ] = obs_prob[k, y_hh[index, k],]
           } else {
-            obs[k,last_lik+p,] = 1
+            obs[k, ] = 1
           }
         }
       } else {
-        obs[,last_lik+p,] = 1
+        obs = matrix(1, nrow = n_obs_type, ncol = n_states)
       }
       
       if(obs_switch == 1) {
         index = min(index + 1, hh_end_ind[h]-hh_start_ind[h]+1)  
       }
       
-      for(s in 1:n_states) {
-        if(s %in% inf_states) {
-          no_hh_inf_prob[,s] = alpha[i_rows[, s], tt-1]*(1-ih_prob) + (1 - alpha[i_rows[,s], tt-1]) # Pr of avoiding infection from each household member
-          no_hh_inf_prob[p, s] = 1 # Particpant can't infect themselves  
+      # Fill in starting probability for SIR states
+      logalpha[ref, 1] = log(init_probs)
+      for(k in 1:n_obs_type) {
+        logalpha[ref, 1] = logalpha[ref, 1] + log(obs[k,])
+      }
+      for(s in inf_states) {
+        i_rows[i, s] = n_states*(i-1)+s  
+      }
+      
+      llik[i, 1] = log(sum(exp(logalpha[ref,1])))
+                                      
+      
+      # normalize and convert to the probability scale
+      alpha[(n_states*(i-1)+1):(n_states*(i-1)+n_states), 1] = softmax(logalpha[ref,1])
+      
+    } # end participant loop - t=1, update logalpha with observation probability
+    for (tt in 2:(hh_tmax[h] - hh_tmin[h] + 1)) {
+      
+      for(p in 1:hh_size[h]) {
+        no_inf_prob <- numeric(n_states)# probability of avoiding all infections
+        no_hh_inf_prob <- matrix(nrow = hh_size[h], ncol = n_states) # probability of avoiding infection from each HH member
+        obs <- matrix(nrow = n_obs_type, ncol = n_states) 
+        
+        ref = n_states*last_lik+n_states*(p-1)+1:n_states
+        
+        logalpha_temp = logalpha[ref,tt-1]
+        
+        obs_switch = 0 
+        
+        if(t_day_hh[index] == tt) {
+          if(part_id_hh[index] == p) {
+            obs_switch = 1
+          }
+        }
+        
+        if(obs_switch == 1) {
+          for(k in 1:n_obs_type) {
+            if(y_hh[index, k] != -1) {
+              obs[k,] = obs_prob[k, y_hh[index, k], ]
+            } else {
+              obs[k,] = 1
+            }
+          }
+        } else {
+          obs = matrix(1, nrow = n_obs_type, ncol = n_states)
+        }
+        
+        if(obs_switch == 1) {
+          index = min(index + 1, hh_end_ind[h]-hh_start_ind[h]+1)  
+        }
+        
+        for(s in 1:n_states) {
+          if(s %in% inf_states) {
+            no_hh_inf_prob[,s] = alpha[i_rows[, s], tt-1]*(1-ih_prob) + (1 - alpha[i_rows[,s], tt-1]) # Pr of avoiding infection from each household member
+            no_hh_inf_prob[p, s] = 1 # Particpant can't infect themselves  
           } else {
             no_hh_inf_prob[,s] = 1 
           }
@@ -194,29 +216,30 @@ for(h in 1:n_hh) { # Loop through households
           trans_temp[i,i] = get_diagonal_element(trans_temp, i)
         }
         
-        # normalize
+        # replace zeroes with epsilon and normalize
+        trans_temp = replace_zeroes(trans_temp, epsilon)
         trans_temp = normalize_cols(trans_temp)
         
         # Compute the probability of each epidemiological state
         logalpha[ref, tt] = log(trans_temp %*% exp(logalpha_temp))
         for(k in 1:n_obs_type) {
-          logalpha[ref, tt] = logalpha[ref, tt] + log(obs[k,last_lik+p,])
+          logalpha[ref, tt] = logalpha[ref, tt] + log(obs[k,])
         }
         
         # normalize and convert to probability scale
-        alpha[ref, tt] = softmax(logalpha[ref,tt])
+        alpha[(n_states*(p-1)+1):(n_states*(p-1)+n_states), tt] = softmax(logalpha[ref,tt])
         
-        llik[last_lik + p, tt] = log(sum(exp(logalpha[ref,tt])))
+        llik[p, tt] = log(sum(exp(logalpha[ref,tt])))
         
       } # end participant loop - update logalpha with observation probability
       
       if(tt == (hh_tmax[h] - hh_tmin[h] + 1)) {
-        llik_final[h] = sum(llik[(last_lik+1):(last_lik+hh_size[h]),tt]) 
+        llik_final[h] = sum(llik[,tt]) 
       }
         
     } # end time loop
-
-} # End household loop
-
+    } # END FORWARD ALGORITHM
+    
+  } 
 
 
