@@ -16,20 +16,67 @@ inv_logit <- function(x) {
 #' @param from string giving name of origin compartment
 #' @param to string giving the name of the destination compartment
 #'
-transit <- function(from, to, ...) {
+transit <- function(from, to, split = NA, ...) {
   
   .dots <- unlist(list(...))
   
-  out <- data.frame(from = from,
-                    to = to,
-                    source = NA,
-                    rate_name = NA,
-                    rate_value = NA)
+  # if(length(to) > 2) {
+  #   stop("Currently only support a maximum of two destination compartments per transition.")
+  # }
   
-  out$rate_name <- names(.dots)
-  out$rate_value <- .dots
+  if(!(sum(is.na(split))) == 1) {
+    if(length(split) > length(to)) {
+      stop("Too many values provided for split.")
+    }
+    
+    if(length(split) == length(to)) {
+      if(is.numeric(split) & sum(split) != 1) {
+        stop("Values for split must sum to 1 if providing for all destination compartments.")
+      } else if(!is.numeric(split)) {
+        stop("Number of named parameters should be one less than the number of destination compartments")
+      }
+    }
+  }
+
   
-  return(out)
+  out <- list()
+  for(i in 1:length(to)) {
+    out[[i]] <- data.frame(from = from,
+                           to = to[i],
+                           source = NA,
+                           rate_name = NA,
+                           rate_value = NA,
+                           split_name = NA,
+                           split = NA)
+    
+    out[[i]]$rate_name <- names(.dots)
+    out[[i]]$rate_value <- .dots
+    
+    if(i == 1) {
+      if(is.numeric(split[i])) {
+        out[[i]]$split <- split[i]
+      } else {
+        out[[i]]$split_name <- split[i]
+      }
+    } else {
+      if(is.numeric(split)) {
+        if(length(split) >= i) {
+          out[[i]]$split <- split[i]
+        } else {
+          out[[i]]$split <- split[1:(i-1)]
+        }
+      } else {
+        if(length(split) >= i) {
+          out[[i]]$split_name <- split[i]
+        } else {
+          out[[i]]$split_name <- paste0("1-", paste(split[1:(i-1)], sep = "-", collapse = "-"))
+        }
+      }
+    }
+    
+  }
+  
+  return(bind_rows(out))
   
 }
 
@@ -40,15 +87,60 @@ transit <- function(from, to, ...) {
 #' @param to string giving the name of the destination compartment
 #' @param source string (or vector of strings) designating which compartments are infectious. If NULL, the destination compartment is presumed to be the infectious compartment.
 #'
-transmit <- function(from, to, source = NA) {
+transmit <- function(from, to, source = NA, split = NA) {
   
-  out <- data.frame(from = from,
-                    to = to,
-                    rate_name = NA,
-                    rate_value = NA)
-  out$source <- ifelse(sum(is.na(source))>0, to, list(source))
+  if(!(sum(is.na(split))) == 1) {
+    if(length(split) > length(to)) {
+      stop("Too many values provided for split.")
+    }
+    
+    if(length(split) == length(to)) {
+      if(is.numeric(split) & sum(split) != 1) {
+        stop("Values for split must sum to 1 if providing for all destination compartments.")
+      } else if(!is.numeric(split)) {
+        stop("Number of named parameters should be one less than the number of destination compartments")
+      }
+    }
+  }
   
-  return(out)
+  
+  out <- list()
+  
+  for(i in 1:length(to)) {
+
+    out[[i]] <- data.frame(from = from,
+                           to = to[i],
+                           rate_name = NA,
+                           rate_value = NA,
+                           split_name = NA,
+                           split = NA)
+    
+    out[[i]]$source <- ifelse(sum(is.na(source))>0, to, list(source))
+    
+    if(i == 1) {
+      if(is.numeric(split[i])) {
+        out[[i]]$split <- split[i]
+      } else {
+        out[[i]]$split_name <- split[i]
+      }
+    } else {
+      if(is.numeric(split)) {
+        if(length(split) >= i) {
+          out[[i]]$split <- split[i]
+        } else {
+          out[[i]]$split <- split[1:(i-1)]
+        }
+      } else {
+        if(length(split) >= i) {
+          out[[i]]$split_name <- split[i]
+        } else {
+          out[[i]]$split_name <- paste0("1-", paste(split[1:(i-1)], sep = "-", collapse = "-"))
+        }
+      }
+    }
+  }
+  
+  return(bind_rows(out))
   
 }
 
@@ -239,7 +331,7 @@ summarize_chains <- function(ch, param, quantiles = c(0.025, 0.975)) {
   qs <- list()
   for(i in 1:length(quantiles)) {
     qs[[i]] <- data.frame(x = quantile(ch_param, quantiles[i]))
-    names(qs[[i]]) <- paste0("quatile_", quantiles[i])
+    names(qs[[i]]) <- paste0("quartile_", quantiles[i])
   }
   qs <- bind_cols(qs)
   out <- bind_cols(out, qs)
