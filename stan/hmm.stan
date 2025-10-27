@@ -67,7 +67,7 @@ functions {
 
 data {
   
-  // Model information
+  // Transitions
   int  n_states; // number of latent states
   matrix[n_states, n_states] trans; // transition probabilities, cols = starting state, rows = ending states
   int n_inf_states; // number of infectious states
@@ -76,9 +76,14 @@ data {
   int param_index[n_trans_fit]; // parameter corresponding with each non-infection transition to fit, 0 if an infection transition
   int trans_index[n_trans_fit, 2]; // row/col indices of transition matrix corresponding to each parameter to be fit
   int source_states[n_trans_fit, n_states]; // states that are the source of infecetion of the transition (0 if non-infection transition)
-  real multiplier[n_trans_fit]; // transition multiplier
   int n_params; // number of additional (non-infection) parameters to fit
   
+  // Multipliers
+  matrix[n_states, n_states] multiplier; // transition multiplier - allows for transition splits
+  int n_mult_fit; // number of multipliers to fit
+  int n_mult_params; // number of unique multipliers parameters to fit
+  int mult_param_index[n_mult_fit]; // parameter corresponding with each non-infection transition to fit, negative if a 1- situation
+  int mult_index[n_mult_fit, 2]; // row/col indices of transition matrix corresponding to each parameter to be fit
   
   // Household information
   int n_hh; // number of households
@@ -106,6 +111,7 @@ data {
 
 parameters {
   real logit_params[n_params];
+  real logit_mult_params[n_mult_params];
   real beta_eh; // monthly intercepts for extra-household probabilities
   real beta_ih; // intra-household probability
 
@@ -118,8 +124,10 @@ transformed parameters {
   matrix[sum(hh_size)*n_states, max(hh_tmax)-min(hh_tmin) + 1] logalpha; // log forward probability
   matrix[n_states, n_states] trans_temp;
   real params[n_params];
+  real mult_params[n_mult_params];
   
   params = inv_logit(logit_params);
+  mult_params = inv_logit(logit_mult_params);
   ih_prob = inv_logit(beta_ih);
   eh_prob = inv_logit(beta_eh);
   trans_temp = trans;
@@ -249,7 +257,7 @@ transformed parameters {
         // fill in tranistions that are being fit
         for(m in 1:n_trans_fit) {
           if(sum(source_states[m,]) == 0) {
-            trans_temp[trans_index[m, 1],trans_index[m, 2]] = params[param_index[m]]*multiplier[m];
+            trans_temp[trans_index[m, 1],trans_index[m, 2]] = params[param_index[m]];
           } else {
             real no_inf = 1;
             for(s in 1:n_states) {
@@ -257,9 +265,21 @@ transformed parameters {
                 no_inf = no_inf*no_inf_prob[s];
               }
             }
-            trans_temp[trans_index[m, 1],trans_index[m, 2]] = 1-(no_inf*(1-eh_prob))*multiplier[m];
+            trans_temp[trans_index[m, 1],trans_index[m, 2]] = 1-(no_inf*(1-eh_prob));
           }
         }
+        
+        // fill in multipliers that are being fit
+        for(m in 1:n_mult_fit) {
+          if(mult_param_index[m] > 0) {
+            trans_temp[trans_index[m, 1],trans_index[m, 2]] = mult_params[mult_param_index[m]];
+          } else {
+            trans_temp[trans_index[m, 1],trans_index[m, 2]] += -1*mult_params[-mult_param_index[m]];
+          }
+        }
+        
+        // transition splits
+        trans_temp = trans_temp .* multiplier;
 
         // fill in diagonals (columns must sum to one)
         for(i in 1:cols(trans_temp)) {

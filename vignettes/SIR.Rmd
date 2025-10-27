@@ -100,7 +100,6 @@ inf_process <- make_infection_model(transmit("S", "Ia", source = c("Ia", "Is")),
                                     transit("Is", "R", gamma = NA))
 
 # Split
-# TODO: throw warning
 inf_process <- make_infection_model(transmit("S", c("Ia", "Is"), source = c("Ia", "Is"), split = c("phi")),
                                     transit("Ia", "R", gamma = NA),
                                     transit("Is", "R", gamma = NA))
