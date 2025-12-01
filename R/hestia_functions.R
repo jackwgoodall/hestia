@@ -140,9 +140,9 @@ transmit <- function(from, to, source = NA, split = NA) {
     } else {
       if(is.numeric(split)) {
         if(length(split) >= i) {
-          out[[i]]$split <- split[i]
+          out[[i]]$split_value <- split[i]
         } else {
-          out[[i]]$split <- 1-sum(split[1:(i-1)])
+          out[[i]]$split_value <- 1-sum(split[1:(i-1)])
         }
       } else {
         if(length(split) >= i) {
@@ -286,6 +286,7 @@ make_observation_model <- function(...) {
 
 make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10) {
   
+  
   inf_details <- get_transmission_details(inf_model)
   dat <- data %>%
     arrange(hh_id, t, part_id)
@@ -345,8 +346,8 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
                    source_states = source_state_matrix,
                    multiplier = inf_details$mult_matrix,
                    n_mult_fit = nrow(mult_info),
-                   n_mult_params = length(unique(abs(mult_info$param))),
-                   mult_param_index = mult_info$param,
+                   n_mult_params = length(unique(abs(unlist(mult_info$param)))),
+                   mult_param_index = unlist(mult_info$param),
                    mult_index = mult_info %>% select(mult_row, mult_col),
                    n_params = length(unique(inf_details$trans_to_fit$param[inf_details$trans_to_fit$param != 0])),
                    n_hh = max(dat$hh_id),
@@ -375,7 +376,7 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
 run_model <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10,
                       file = "stan/hmm.stan", iter = 2000, chains = 4,
                       cores = getOption("mc.cores", 1L), init = NULL,
-                      save_chains = FALSE) {
+                      save_chains = FALSE, save_states = TRUE) {
   
   dat_stan <- make_stan_data(inf_model, obs_model, data, init_probs, epsilon)
   
@@ -388,12 +389,24 @@ run_model <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10,
     init <- rep(list(init), 4)
   }
   
-  stan_fit <- stan(file = file,
-                   data = dat_stan,
-                   iter = iter,
-                   chains = chains,
-                   cores = cores,
-                   init = init)
+  if(save_states) {
+    stan_fit <- stan(file = file,
+                     data = dat_stan,
+                     iter = iter,
+                     chains = chains,
+                     cores = cores,
+                     init = init)
+  } else {
+    stan_fit <- stan(file = file,
+                     data = dat_stan,
+                     iter = iter,
+                     chains = chains,
+                     cores = cores,
+                     init = init,
+                     pars = "logalpha",
+                     include = FALSE)
+  }
+  
   
   ch <- rstan::extract(stan_fit)
 

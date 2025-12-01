@@ -132,6 +132,7 @@ transformed parameters {
   eh_prob = inv_logit(beta_eh);
   trans_temp = trans;
   
+  
   for(h in 1:n_hh) { // loop through household
     
     matrix[hh_size[h]*n_states, max(hh_tmax)-min(hh_tmin) + 1] alpha; // forward prob, normalized
@@ -215,6 +216,7 @@ transformed parameters {
         int ref[n_states];
         vector[n_states] logalpha_temp; // log forward probability
         matrix[n_obs_type, n_states] obs;
+        matrix[n_states, n_states] mult_temp;
         
         ref = linspaced_int_array(n_states, n_states*last_lik+n_states*(p-1)+1, n_states*last_lik+n_states*(p-1)+n_states);
         
@@ -270,16 +272,17 @@ transformed parameters {
         }
         
         // fill in multipliers that are being fit
+        mult_temp = multiplier; // need to reset mult_temp since it is self-referential
         for(m in 1:n_mult_fit) {
           if(mult_param_index[m] > 0) {
-            trans_temp[trans_index[m, 1],trans_index[m, 2]] = mult_params[mult_param_index[m]];
+            mult_temp[mult_index[m, 1],mult_index[m, 2]] = mult_params[mult_param_index[m]];
           } else {
-            trans_temp[trans_index[m, 1],trans_index[m, 2]] += -1*mult_params[-mult_param_index[m]];
+            mult_temp[mult_index[m, 1], mult_index[m, 2]] += -1*mult_params[-mult_param_index[m]];
           }
         }
         
         // transition splits
-        trans_temp = trans_temp .* multiplier;
+        trans_temp = trans_temp .* mult_temp;
 
         // fill in diagonals (columns must sum to one)
         for(i in 1:cols(trans_temp)) {
