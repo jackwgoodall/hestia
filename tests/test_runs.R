@@ -137,19 +137,19 @@ if(cluster_run) {
              igg = y2,
              symp = y3)
     
+    # Define infection process model
     inf_process <- make_infection_model(transmit("S", c("Is", "Ia"), source = c("Is", "Ia"), split = "phi"),
                                         transit("Is", "R", gamma_s = NA),
                                         transit("Ia", "R", gamma_a = NA))
     
+    # Define observation process model
     obs_process <- make_observation_model(pcr = c("S" = 0.05, "Is" = 0.95, "Ia" = 0.95, "R" = 0.05),
                                           igg = c("S" = 0.01, "Is" = 0.01, "Ia" = 0.01, "R" = 0.8),
                                           symp = c("S" = 0.03, "Is" = 1-1e-10, "Ia" = 0.03,  "R" = 0.03))
-    epsilon <- 1e-10
-    init_probs <- c(1-3*epsilon, epsilon, epsilon, epsilon)
-    
-    
+
+    # Run model
     res_stan <- run_model(inf_model = inf_process, obs_model = obs_process,
-                          data = dat, init_probs = init_probs,
+                          data = dat, init_probs = c(1-3*1e-10, 1e-10, 1e-10, 1e-10),
                           iter = 2000, cores = 4, save_chains = TRUE, save_states = FALSE,
                           file = "stan/hmm.stan") 
   
