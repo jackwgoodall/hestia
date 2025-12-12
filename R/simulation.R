@@ -143,6 +143,10 @@ sim_siir <- function(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
                      start_prob = c(1, 0, 0, 0),
                      complete_enroll = TRUE) {
   
+  if(length(ih_prob) == 1) {
+    ih_prob <- rep(ih_prob, 2)
+  }
+  
   epsilon <- 1e-10
   
   hh_size <- sample(hh_size, n_hh, replace = TRUE) # household sizes
@@ -197,13 +201,13 @@ sim_siir <- function(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
         prior <- new_obs$state
         
       } else {
-        prior_inf <- sum(prior %in% c(2, 3))
+        prior_inf <- c(sum(prior == 2), sum(prior == 3))
         new_states <- rep(0, hh_size[i])
         for(part in 1:hh_size[i]) {
           if(prior[part] == 1) {
             eh_prob_x <- inv_logit(logit(eh_prob)+sum(x[last_x+part,]*covs_eh))
             ih_prob_x <- inv_logit(logit(ih_prob)+sum(x[last_x+part,]*covs_ih))
-            no_inf_prob <- (1-eh_prob_x)*(1-ih_prob_x)^prior_inf
+            no_inf_prob <- (1-eh_prob_x)*prod((1-ih_prob_x)^prior_inf)
             new_states[part] = sample(x = c(1, 2, 3, 4),
                                       size = 1,
                                       prob = c(no_inf_prob,

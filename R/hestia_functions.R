@@ -127,7 +127,8 @@ transmit <- function(from, to, source = NA, split = NA) {
                            rate_name = NA,
                            rate_value = NA,
                            split_name = NA,
-                           split_value = NA)
+                           split_value = NA,
+                           mult_inf_prob = NA)
     
     out[[i]]$source <- ifelse(sum(is.na(source))>0, to, list(source))
     
@@ -165,10 +166,11 @@ transmit <- function(from, to, source = NA, split = NA) {
 #' @param ih_cov indicator for whether intra-household infection risk is a function of covariates
 #' @param eh_cov indicator for whether extra-household infection risk is a function of covariates
 #' 
-make_infection_model <- function(..., ih_cov = FALSE, eh_cov = FALSE) {
+make_infection_model <- function(..., mult_inf_probs = FALSE) {
   .dots <- list(...)
    
   out  <- dplyr::bind_rows(.dots)
+  out$mult_inf_probs <- mult_inf_probs
   
   return(out)
   
@@ -264,7 +266,8 @@ get_transmission_details <- function(inf_model) {
               mult_matrix = mult,
               trans_to_fit = trans_to_fit,
               mult_to_fit = mult_to_fit,
-              inf_states = unique(unlist(trans_to_fit$source[is.na(trans_to_fit$rate_name)]))))
+              inf_states = unique(unlist(trans_to_fit$source[is.na(trans_to_fit$rate_name)])),
+              mult_inf_probs = inf_model$mult_inf_probs[1]))
 }
 
 
@@ -365,7 +368,8 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
                    hh_tmax = hh_sum$hh_tmax,
                    obs_prob = obs_array,
                    init_probs = init_probs, #TODO: Toggle to fit
-                   epsilon = epsilon)
+                   epsilon = epsilon,
+                   n_inf_prob = ifelse(inf_details$mult_inf_probs, length(inf_details$inf_states), 1))
   
   return(dat_stan)
   
@@ -384,7 +388,7 @@ run_model <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10,
     init = rep(list(list(logit_params = array(rep(logit(0.5), dat_stan$n_params)),
                          logit_mult_params = array(rep(logit(0.5), dat_stan$n_mult_params)),
                          beta_eh = logit(0.02),
-                         beta_ih = logit(0.02))), 4)
+                         beta_ih = rep(logit(0.02), dat_stan$n_inf_prob))), 4)
   } else {
     init <- rep(list(init), 4)
   }
@@ -414,7 +418,7 @@ run_model <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10,
                    summarize_chains(ch, "eh_prob"))
   
   return(list(res = res,
-              chains = if(save_chains){ch} else {null}))
+              chains = if(save_chains){ch} else {NULL}))
   
 }
 

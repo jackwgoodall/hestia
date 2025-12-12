@@ -101,7 +101,10 @@ data {
   int hh_end_ind[n_hh]; // ending index for the HH
   int hh_tmin[n_hh]; // minimum day for which there is a HH observation
   int hh_tmax[n_hh]; // maximum day for which there is a HH observation
-
+  
+  // Covariate information
+  
+  
   // Initial state and observation probabilities
   matrix[n_unique_obs, n_states] obs_prob[n_obs_type]; // observation process for SIR states
   vector[n_states] init_probs; // starting state probabilities
