@@ -76,8 +76,34 @@ res_stan <- run_model(inf_model = inf_process, obs_model = obs_process,
                       file = "../stan/hmm.stan")
 
 
+ggplot(res_stan$res, aes(x = param, y = median, ymin = quartile_0.025, ymax = quartile_0.975)) +
+  geom_point() +
+  geom_errorbar()
+
 ```
 
 ## SIR model with separate compartments for symptomatic and symptomatic infection
 
+```{r}
 
+# Parallel (no split)
+inf_process <- make_infection_model(transmit("S", "Ia", source = "Ia"),
+                                    transmit("S", "Is", source = "Is"),
+                                    transit("Ia", "R", gamma = NA),
+                                    transit("Is", "R", gamma = NA))
+
+# Split, incorrectly specified
+# TODO: throw warning
+inf_process <- make_infection_model(transmit("S", "Ia", source = c("Ia", "Is")),
+                                    transmit("S", "Is", source = c("Ia", "Is")),
+                                    transit("Ia", "R", gamma = NA),
+                                    transit("Is", "R", gamma = NA))
+
+# Split
+inf_process <- make_infection_model(transmit("S", c("Ia", "Is"), source = c("Ia", "Is"), split = c("phi")),
+                                    transit("Ia", "R", gamma = NA),
+                                    transit("Is", "R", gamma = NA))
+
+
+
+```
