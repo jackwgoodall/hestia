@@ -26,7 +26,6 @@ library(tidyverse)
 # second informative about recovery (e.g. IgG))
 dat_sim <- sim_sir(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
                    hh_size = 1:5, tmax = 100, gamma = 1/5,
-                   covs_eh = c(0, 0), covs_ih = c(0, 0),
                    obs_prob = list(c(0.05, 0.95, 0.05),
                                    c(0.01, 0.01, 0.8)),
                    start_prob = c(1, 0, 0),
@@ -50,7 +49,7 @@ inf_process <- make_infection_model(transmit("S", "I"),
                                     transit("I", "R", gamma = NA))
 
 inf_process
-get_tranmission_details(inf_process) # for now, to check internal structure
+get_transmission_details(inf_process) # for now, to check internal structure
 
 ```
 
@@ -72,15 +71,42 @@ Get data into stan format. (This will be put into a function once I make sure it
 
 res_stan <- run_model(inf_model = inf_process, obs_model = obs_process,
                       data = dat, init_probs = c(1-2*1e-10, 1e-10, 1e-10),
-                      iter = 1000, cores = 4, save_chains = TRUE,
-                      file = "../stan/hmm.stan")
+                      iter = 10, cores = 4, save_chains = TRUE,
+                      file = "../inst/stan/hmm.stan")
 
 
-ggplot(res_stan$res, aes(x = param, y = median, ymin = quartile_0.025, ymax = quartile_0.975)) +
-  geom_point() +
-  geom_errorbar()
+# TO DO: process chains
 
 ```
+
+## Add in covariates
+
+```{r}
+# Simulate data from a basic SIR model for 100 households
+# Everyone starts susceptible
+# Two observations, first informative about infection (e.g. culture or PCR, 
+# second informative about recovery (e.g. IgG))
+dat_sim <- sim_sir(eh_prob = 0.01, ih_prob = 0.05, n_hh = 10,
+                   hh_size = 1:5, tmax = 100, gamma = 1/5,
+                   covs_eh = c(-0.4, 0.7), covs_ih = c(0.8, 0.1),
+                   obs_prob = list(c(0.05, 0.95, 0.05),
+                                   c(0.01, 0.01, 0.8)),
+                   start_prob = c(1, 0, 0),
+                   complete_enroll = TRUE)
+
+# Name courcome columns
+dat <- dat_sim$obs %>%
+  rename(pcr = y1, igg = y2)
+
+# Run model with x1 and x2 as covariates
+res_stan <- run_model(inf_model = inf_process, obs_model = obs_process,
+                      data = dat, ih_cov = c("x1", "x2"), eh_cov = c("x1"),
+                      init_probs = c(1-2*1e-10, 1e-10, 1e-10),
+                      iter = 10, cores = 4, save_chains = TRUE,
+                      file = "../inst/stan/hmm.stan")
+
+```
+
 
 ## SIR model with separate compartments for symptomatic and symptomatic infection
 
