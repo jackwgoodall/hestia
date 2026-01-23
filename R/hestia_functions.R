@@ -10,7 +10,8 @@ inv_logit <- function(x) {
   exp(x)/(1+exp(x))
 }
 
-#' Utility function for checking whether split parameter is properly defined
+#' @title Checking split parameter specification
+#' @descript Utility function for checking whether split parameter is properly defined
 #'
 #' @param to character vector giving the name(s) of the destination compartment
 #' @param split numeric or character vector indicating how people moving out of the starting compartment are split between the destination compartments
@@ -54,11 +55,17 @@ split_check <- function(to, split) {
   }
 }
 
+
+#' @title Define a non-infection transition
+#'
+#' @description
 #' Defines a state transition in the infection process model which does not
 #' represent an transmission (infection) event
 #'
 #' @param from string giving name of origin compartment
-#' @param to string giving the name of the destination compartment
+#' @param to string or vector of strings giving the name of the destination compartment
+#' @param split an optional character or numeric vector indicating what proportion of individuals
+#' transition into each of the `to` compartments
 #'
 transit <- function(from, to, split = NA, ...) {
 
@@ -107,6 +114,9 @@ transit <- function(from, to, split = NA, ...) {
 
 }
 
+#' @title Define a infection transition
+#'
+#' @description
 #' Defines a state transition in the infection process model which is
 #' the result of a transmission (infection) event
 #'
