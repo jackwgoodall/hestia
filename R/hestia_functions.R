@@ -375,11 +375,11 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
   if(!(is.null(eh_cov) & is.null(ih_cov))) {
     if(!is.null(eh_cov) & !is.null(ih_cov)) {
 
-      k_ih <- length(ih_cov)
-      x_ih <- data[,ih_cov]
+      k_ih <- ncol(ih_cov)
+      x_ih <- ih_cov
 
-      k_eh <- length(eh_cov)
-      x_eh <- data[,eh_cov]
+      k_eh <- ncol(eh_cov)
+      x_eh <- eh_cov
 
       dat_stan <- append(dat_stan,
                          list(k_ih = k_ih,
@@ -407,10 +407,24 @@ run_model <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10,
   dat_stan <- make_stan_data(inf_model, obs_model, data, init_probs, epsilon, ih_cov, eh_cov)
 
   if(is.null(init)) {
-    init = rep(list(list(logit_params = array(rep(logit(0.5), dat_stan$n_params)),
-                         logit_mult_params = array(rep(logit(0.5), dat_stan$n_mult_params)),
-                         beta_eh = logit(0.02),
-                         beta_ih = array(rep(logit(0.02), dat_stan$n_inf_prob)))), 4)
+    if(!is.null(eh_cov) & !is.null(ih_cov)) {
+      
+      init = rep(list(list(logit_params = array(rep(logit(0.5), dat_stan$n_params)),
+                           logit_mult_params = array(rep(logit(0.5), dat_stan$n_mult_params)),
+                           beta_eh = rep(0, dat_stan$k_eh),
+                           beta_ih = rep(0, dat_stan$k_ih),
+                           beta0_eh = logit(0.02),
+                           beta0_ih = array(rep(logit(0.02), dat_stan$n_inf_prob)))), 4)
+      
+    } else {
+      
+      init = rep(list(list(logit_params = array(rep(logit(0.5), dat_stan$n_params)),
+                           logit_mult_params = array(rep(logit(0.5), dat_stan$n_mult_params)),
+                           beta_eh = logit(0.02),
+                           beta_ih = array(rep(logit(0.02), dat_stan$n_inf_prob)))), 4)
+      
+    }
+    
   } else {
     init <- rep(list(init), 4)
   }

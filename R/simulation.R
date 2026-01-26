@@ -127,7 +127,6 @@ sim_sir <- function(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
   if(!all(c(covs_eh, covs_ih) == 0)) {
     x <- as.data.frame(x)
     names(x) <- paste0("x", 1:ncol(x))
-    complete_obs <- cbind(complete_obs, x)
   }
 
   if(!complete_enroll) {
@@ -135,9 +134,16 @@ sim_sir <- function(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
   } else {
     obs <- complete_obs
   }
+  
+  out <- list(obs = obs,
+              complete_obs = complete_obs)
+  
+  if(!all(c(covs_eh, covs_ih) == 0)) {
+    out <- append(out,
+                  list(x = x))
+  }
 
-  return(list(obs = obs,
-              complete_obs = complete_obs))
+  return(out)
 }
 
 

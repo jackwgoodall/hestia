@@ -86,7 +86,7 @@ res_stan <- run_model(inf_model = inf_process, obs_model = obs_process,
 # Everyone starts susceptible
 # Two observations, first informative about infection (e.g. culture or PCR, 
 # second informative about recovery (e.g. IgG))
-dat_sim <- sim_sir(eh_prob = 0.01, ih_prob = 0.05, n_hh = 10,
+dat_sim <- sim_sir(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
                    hh_size = 1:5, tmax = 100, gamma = 1/5,
                    covs_eh = c(-0.4, 0.7), covs_ih = c(0.8, 0.1),
                    obs_prob = list(c(0.05, 0.95, 0.05),
@@ -100,10 +100,10 @@ dat <- dat_sim$obs %>%
 
 # Run model with x1 and x2 as covariates
 res_stan <- run_model(inf_model = inf_process, obs_model = obs_process,
-                      data = dat, ih_cov = c("x1", "x2"), eh_cov = c("x1"),
+                      data = dat, ih_cov = dat_sim$x, eh_cov = dat_sim$x,
                       init_probs = c(1-2*1e-10, 1e-10, 1e-10),
-                      iter = 10, cores = 4, save_chains = TRUE,
-                      file = "../inst/stan/hmm.stan")
+                      iter = 1000, cores = 4, save_chains = TRUE,
+                      file = "../inst/stan/hmm_cov.stan")
 
 ```
 
