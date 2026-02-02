@@ -39,7 +39,7 @@ int is_in(int pos, array[] int pos_var) {
     matrix[rows(m), cols(m)] out;
   
     for(i in 1:cols(m)) {
-      out[,i] = m[,i]/sum(m[,1]);
+      out[,i] = m[,i]/sum(m[,i]);
     }
     return out;
   }
