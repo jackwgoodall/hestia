@@ -79,7 +79,7 @@ data {
   int n_params; // number of additional (non-infection) parameters to fit
 
   // Multipliers
-  matrix[n_states, n_states] multiplier; // transition multiplier - allows for transition splits
+  matrix[n_states, n_states] transition_multiplier; // transition multiplier - allows for transition splits
   int n_mult_fit; // number of multipliers to fit
   int n_mult_params; // number of unique multipliers parameters to fit
   array[n_mult_fit] int mult_param_index; // parameter corresponding with each non-infection transition to fit, negative if a 1- situation
@@ -288,7 +288,7 @@ transformed parameters {
         }
 
         // fill in multipliers that are being fit
-        mult_temp = multiplier; // need to reset mult_temp since it is self-referential
+        mult_temp = transition_multiplier; // need to reset mult_temp since it is self-referential
         for(m in 1:n_mult_fit) {
           if(mult_param_index[m] > 0) {
             mult_temp[mult_index[m, 1],mult_index[m, 2]] = mult_params[mult_param_index[m]];
