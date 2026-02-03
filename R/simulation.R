@@ -339,7 +339,7 @@ sim_seir <- function(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
 
     # Move HH members through SIR states
     for(d in 1:tmax) {
-      wk <- base::ceiling(d/7)
+      wk <- base::ceiling(d/7) # @ Claire is this doing anything?
       if(d == 1) {
         new_obs <- bind_rows(data.frame(t = rep(d, hh_size[i]),
                                         part_id = part_ids[[i]],
@@ -439,14 +439,14 @@ sim_sis <- function(eh_prob = 0.01,
                     n_hh = 100,
                     hh_size = 1:5, 
                     tmax = 100, 
-                    gamma = 1/5,
+                    gamma = 1/3,
                     covs_eh = c(0, 0), 
                     covs_ih = c(0, 0),
                     obs_prob = list(c(0.05, 0.95), # S&+ , I&+
                                     c(0.01, 0.8)), # S&+ , I&+
-                    start_prob = c(1, 0),
+                    start_prob = c(0.8, 0.2),
                     complete_enroll = TRUE,
-                    sigma_pid = 0) {                   # standard deviation by PID
+                    sigma_pid = 0) {                 # standard deviation by individual on logit scale
   
   epsilon <- 1e-10
   
@@ -454,6 +454,8 @@ sim_sis <- function(eh_prob = 0.01,
   enroll_per_hh <- numeric(n_hh) # number of participants enrolled per HH ??
   
   x <- matrix(nrow = sum(hh_size), ncol = length(covs_ih))
+  
+  u_pid <- rnorm(sum(hh_size), mean = 0, sd = sigma_pid)
   
   for(i in 1:length(covs_ih)) {
     x[,i] <- rbinom(sum(hh_size), 1, 0.4) # 4/10 get 1, 0
@@ -478,7 +480,8 @@ sim_sis <- function(eh_prob = 0.01,
                              enroll = numeric(),
                              state = numeric(),
                              hh_size = numeric(),
-                             hh_id = numeric())
+                             hh_id = numeric(),
+                             u_pid = numeric())
   
   last_x <- 0
   
@@ -488,13 +491,17 @@ sim_sis <- function(eh_prob = 0.01,
     for(d in 1:tmax) {
       wk <- base::ceiling(d/7)
       if(d == 1) {
+        
+        pid_global_vec <- last_x + part_ids[[i]]
+        
         new_obs <- bind_rows(data.frame(t = rep(d, hh_size[i]),
                                         part_id = part_ids[[i]],
                                         enroll = c(rep(1, enroll_per_hh[i]), rep(0, hh_size[i]-enroll_per_hh[i])),
                                         state = sample(1:2, hh_size[i], replace = T, prob = start_prob),
                                         hh_size = rep(hh_size[i], hh_size[i]),
-                                        hh_id = rep(i, hh_size[i])))
-        
+                                        hh_id = rep(i, hh_size[i]),
+                                        u_pid = u_pid[pid_global_vec]
+                                        ))
         complete_obs <- complete_obs %>%
           bind_rows(new_obs)
         
@@ -505,15 +512,21 @@ sim_sis <- function(eh_prob = 0.01,
         new_states <- integer(hh_size[i])
         
         for (part in 1:hh_size[i]) {
-          if (prior[part] == 1) {  # S
-            eh_prob_x <- inv_logit(qlogis(eh_prob) + sum(x[last_x + part, ] * covs_eh))
-            ih_prob_x <- inv_logit(qlogis(ih_prob) + sum(x[last_x + part, ] * covs_ih))
+          if (prior[part] == 1) {  # S state
+            
+            eh_prob_x <- plogis(qlogis(eh_prob) +
+                                  sum(x[last_x + part, ] * covs_eh) +
+                                  u_pid[last_x + part]) # individual level variability
+            
+            ih_prob_x <- plogis(qlogis(ih_prob) +
+                                  sum(x[last_x + part, ] * covs_ih) +
+                                  u_pid[last_x + part]) # individual level variability
             
             no_inf_prob <- (1 - eh_prob_x) * (1 - ih_prob_x)^prior_inf
             
             new_states[part] <- sample(x = c(1, 2), size = 1,
                                        prob = c(no_inf_prob, 1 - no_inf_prob))
-          } else {                 # I
+          } else {                 # I state
             new_states[part] <- sample(x = c(1, 2), size = 1,
                                        prob = c(gamma, 1 - gamma))
           }
@@ -525,8 +538,9 @@ sim_sis <- function(eh_prob = 0.01,
           enroll = c(rep(1, enroll_per_hh[i]), rep(0, hh_size[i] - enroll_per_hh[i])),
           state = new_states,
           hh_size = rep(hh_size[i], hh_size[i]),
-          hh_id = rep(i, hh_size[i])
-        )
+          hh_id = rep(i, hh_size[i]),
+          u_pid = u_pid[pid_global_vec]
+                             )
         
         complete_obs <- bind_rows(complete_obs, new_obs)
         prior <- new_states
