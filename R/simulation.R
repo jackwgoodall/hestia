@@ -341,15 +341,15 @@ sim_seir <- function(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
     for(d in 1:tmax) {
       wk <- base::ceiling(d/7)
       if(d == 1) {
-        new_obs <- dplyr::bind_rows(data.frame(t = rep(d, hh_size[i]),
+        new_obs <- bind_rows(data.frame(t = rep(d, hh_size[i]),
                                         part_id = part_ids[[i]],
                                         enroll = c(rep(1, enroll_per_hh[i]), rep(0, hh_size[i]-enroll_per_hh[i])),
-                                        state = sample(1:2, hh_size[i], replace = T, prob = start_prob),
+                                        state = sample(1:4, hh_size[i], replace = T, prob = start_prob),
                                         hh_size = rep(hh_size[i], hh_size[i]),
                                         hh_id = rep(i, hh_size[i])))
 
         complete_obs <- complete_obs %>%
-          dplyr::bind_rows(new_obs)
+          bind_rows(new_obs)
 
         prior <- new_obs$state
 
