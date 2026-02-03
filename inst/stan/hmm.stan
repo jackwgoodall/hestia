@@ -21,29 +21,25 @@ functions {
   // example code: 
   // if(r_in(3,{1,2,3,4})) will evaluate as TRUE
   // from: https://discourse.mc-stan.org/t/stan-equivalent-of-rs-in-function/3849
-  int is_in(int pos,int[] pos_var) {
-    int pos_match;
-    int all_matches[size(pos_var)];
-    
-    for (p in 1:(size(pos_var))) {
-      all_matches[p] = (pos_var[p]==pos);
-    }
-    
-    if(sum(all_matches)>0) {
-      pos_match = 1;
-      return pos_match;
-    } else {
-      pos_match = 0;
-      return pos_match;
-    }
+
+int is_in(int pos, array[] int pos_var) {
+  int pos_match;
+  array[size(pos_var)] int all_matches;
+
+  for (p in 1:size(pos_var)) {
+    all_matches[p] = (pos_var[p] == pos);
   }
+
+  if (sum(all_matches) > 0) return 1;
+  else return 0;
+}
   
   // Normailze the columns of a matrix to sum to 1
   matrix normalize_cols(matrix m) {
     matrix[rows(m), cols(m)] out;
   
     for(i in 1:cols(m)) {
-      out[,i] = m[,i]/sum(m[,1]);
+      out[,i] = m[,i]/sum(m[,i]);
     }
     return out;
   }
@@ -71,39 +67,39 @@ data {
   int  n_states; // number of latent states
   matrix[n_states, n_states] trans; // transition probabilities, cols = starting state, rows = ending states
   int n_inf_states; // number of infectious states
-  int inf_states[n_inf_states]; // infectious states
+  array[n_inf_states] int inf_states; // infectious states 
   int n_trans_fit; // number of transitions to fit
-  int param_index[n_trans_fit]; // parameter corresponding with each non-infection transition to fit, 0 if an infection transition
-  int trans_index[n_trans_fit, 2]; // row/col indices of transition matrix corresponding to each parameter to be fit
-  int source_states[n_trans_fit, n_states]; // states that are the source of infecetion of the transition (0 if non-infection transition)
+  array[n_trans_fit] int param_index; // parameter corresponding with each non-infection transition to fit, 0 if an infection transition 
+  array[n_trans_fit, 2] int trans_index; // row/col indices of transition matrix corresponding to each parameter to be fit 
+  array[n_trans_fit, n_states] int source_states; // states that are the source of infecetion of the transition (0 if non-infection transition)
   int n_params; // number of additional (non-infection) parameters to fit
   
   // Multipliers
-  matrix[n_states, n_states] multiplier; // transition multiplier - allows for transition splits
+  matrix[n_states, n_states] transition_multiplier; // transition multiplier - allows for transition splits 
   int n_mult_fit; // number of multipliers to fit
   int n_mult_params; // number of unique multipliers parameters to fit
-  int mult_param_index[n_mult_fit]; // parameter corresponding with each non-infection transition to fit, negative if a 1- situation
-  int mult_index[n_mult_fit, 2]; // row/col indices of transition matrix corresponding to each parameter to be fit
+  array[n_mult_fit] int mult_param_index; // parameter corresponding with each non-infection transition to fit, negative if a 1- situation 
+  array[n_mult_fit, 2] int mult_index; // row/col indices of transition matrix corresponding to each parameter to be fit
   
   // Household information
   int n_hh; // number of households
-  int hh_size[n_hh]; // household size
+  array[n_hh] int hh_size; // household size 
     
   // Data 
   int n_obs; // number of observations
   int n_obs_type; // number of observation types
   int n_unique_obs; // number of unique outcomes for enrolled individuals
-  int y[n_obs, n_obs_type]; // outcome vector, ordered by 1) household, then 2) time, then 3) individual
-  int part_id[n_obs]; // particpants associated with the observation
-  int t_day[n_obs]; // observation times for enrolled (day)
-  int obs_per_hh[n_hh]; // total number of observations per HH for enrolled
-  int hh_start_ind[n_hh]; // starting index for the HH
-  int hh_end_ind[n_hh]; // ending index for the HH
-  int hh_tmin[n_hh]; // minimum day for which there is a HH observation
-  int hh_tmax[n_hh]; // maximum day for which there is a HH observation
+  array[n_obs, n_obs_type] int y; // outcome vector, ordered by 1) household, then 2) time, then 3) individual
+  array[n_obs] int part_id; // particpants associated with the observation 
+  array[n_obs] int t_day; // observation times for enrolled (day) 
+  array[n_hh] int obs_per_hh; // total number of observations per HH for enrolled 
+  array[n_hh] int hh_start_ind; // starting index for the HH 
+  array[n_hh] int hh_end_ind; // ending index for the HH
+  array[n_hh] int hh_tmin; // minimum day for which there is a HH observation 
+  array[n_hh] int hh_tmax; // maximum day for which there is a HH observation 
 
   // Initial state and observation probabilities
-  matrix[n_unique_obs, n_states] obs_prob[n_obs_type]; // observation process for SIR states
+  array[n_obs_type] matrix[n_unique_obs, n_states] obs_prob; // observation process for SIR states 
   vector[n_states] init_probs; // starting state probabilities
   
   real epsilon; // small number to avoid log(0) issues
@@ -111,21 +107,21 @@ data {
 }
 
 parameters {
-  real logit_params[n_params];
-  real logit_mult_params[n_mult_params];
+  array[n_params] real logit_params; 
+  array[n_mult_params] real logit_mult_params; 
   real beta_eh; // monthly intercepts for extra-household probabilities
-  real beta_ih[n_inf_prob]; // intra-household probability
+  array[n_inf_prob] real beta_ih; // intra-household probability 
 
 }
 
 transformed parameters {
   vector[n_hh] llik_final; // sum of logalpha for final timestep
-  real ih_prob[n_inf_prob];
+  array[n_inf_prob] real ih_prob; 
   real eh_prob;
   matrix[sum(hh_size)*n_states, max(hh_tmax)-min(hh_tmin) + 1] logalpha; // log forward probability
   matrix[n_states, n_states] trans_temp;
-  real params[n_params];
-  real mult_params[n_mult_params];
+  array[n_params] real params;
+  array[n_mult_params] real mult_params; 
   
   params = inv_logit(logit_params);
   mult_params = inv_logit(logit_mult_params);
@@ -138,11 +134,11 @@ transformed parameters {
     
     matrix[hh_size[h]*n_states, max(hh_tmax)-min(hh_tmin) + 1] alpha; // forward prob, normalized
     matrix[hh_size[h], max(hh_tmax)-min(hh_tmin) + 1] llik; // lik contribution for enrolled per participant and time
-    int y_hh[obs_per_hh[h], n_obs_type];
-    int part_id_hh[obs_per_hh[h]];
-    int t_day_hh[obs_per_hh[h]];
+    array[obs_per_hh[h], n_obs_type] int y_hh;
+    array[obs_per_hh[h]] int part_id_hh;
+    array[obs_per_hh[h]] int t_day_hh;
     int index; // index for next observation
-    int i_rows[hh_size[h], n_states];// rows in alpha corresponding to infectious states
+    array[hh_size[h], n_states] int i_rows; // rows in alpha corresponding to infectious states
     int last_lik;
     int obs_switch; // indicator for whether there is an observation corresponding to this time step
     
@@ -165,7 +161,7 @@ transformed parameters {
     
     // fill first column of alpha using starting probabilities
     for(i in 1:hh_size[h]) {
-      int ref[n_states];
+      array[n_states] int ref;
       matrix[n_obs_type, n_states] obs; // observation component for enrolled memebrs, set to 1 if no observation for this time step
     
       ref = linspaced_int_array(n_states, n_states*last_lik+n_states*(i-1)+1, n_states*last_lik+n_states*(i-1)+n_states);
@@ -212,9 +208,9 @@ transformed parameters {
     for (tt in 2:(hh_tmax[h] - hh_tmin[h] + 1)) {
       
       for(p in 1:hh_size[h]) {
-        real no_inf_prob[n_states]; // probability of avoiding all infections
+        array[n_states] real no_inf_prob; // probability of avoiding all infections
         matrix[hh_size[h], n_states] no_hh_inf_prob; // probability of avoiding infection from each HH member
-        int ref[n_states];
+        array[n_states] int ref;
         vector[n_states] logalpha_temp; // log forward probability
         matrix[n_obs_type, n_states] obs;
         matrix[n_states, n_states] mult_temp;
@@ -279,7 +275,7 @@ transformed parameters {
         }
         
         // fill in multipliers that are being fit
-        mult_temp = multiplier; // need to reset mult_temp since it is self-referential
+        mult_temp = transition_multiplier; // need to reset mult_temp since it is self-referential
         for(m in 1:n_mult_fit) {
           if(mult_param_index[m] > 0) {
             mult_temp[mult_index[m, 1],mult_index[m, 2]] = mult_params[mult_param_index[m]];
@@ -333,4 +329,3 @@ model {
   target += sum(llik_final);
 
 }
-
