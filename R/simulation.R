@@ -434,7 +434,7 @@ sim_seir <- function(eh_prob = 0.01, ih_prob = 0.05, n_hh = 100,
 }
 
 # SIS model 
-sim_sis <- function(eh_prob = 0.01, 
+sim_sis <- function(eh_prob = 0.05, 
                     ih_prob = 0.05, 
                     n_hh = 100,
                     hh_size = 1:5, 
@@ -446,9 +446,34 @@ sim_sis <- function(eh_prob = 0.01,
                                     c(0.01, 0.8)), # S&+ , I&+
                     start_prob = c(0.8, 0.2),
                     complete_enroll = TRUE,
-                    sigma_pid = 0) {                 # standard deviation by individual on logit scale
+                    sigma_pid = 0,                   # standard deviation by individual on logit scale
+                    season_k = 0,                    # number of Fourier harmonics
+                    season_period = 365,             # period in days
+                    season_coefs_eh = NULL,          # length 2*season_k (sin1, cos1, sin2, cos2, ...)
+                    season_coefs_ih = NULL) {         # length 2*season_k (sin1, cos1, sin2, cos2, ...)
   
   epsilon <- 1e-10
+
+  season_effect <- function(d, coefs, period) {
+    if (is.null(coefs) || length(coefs) == 0) return(0)
+    if ((length(coefs) %% 2) != 0) stop("season_coefs must have even length (sin, cos pairs).")
+    k <- length(coefs) / 2
+    harm <- seq_len(k)
+    sin_terms <- sin(2 * pi * harm * d / period)
+    cos_terms <- cos(2 * pi * harm * d / period)
+    sum(coefs[seq(1, length(coefs), by = 2)] * sin_terms +
+          coefs[seq(2, length(coefs), by = 2)] * cos_terms)
+  }
+  if (season_k > 0) {
+    if (is.null(season_coefs_eh)) season_coefs_eh <- rep(0, 2 * season_k)
+    if (is.null(season_coefs_ih)) season_coefs_ih <- rep(0, 2 * season_k)
+    if (!is.null(season_coefs_eh) && length(season_coefs_eh) != 2 * season_k) {
+      stop("season_coefs_eh must have length 2*season_k.")
+    }
+    if (!is.null(season_coefs_ih) && length(season_coefs_ih) != 2 * season_k) {
+      stop("season_coefs_ih must have length 2*season_k.")
+    }
+  }
   
   hh_size <- sample(hh_size, n_hh, replace = TRUE) # household sizes
   enroll_per_hh <- numeric(n_hh) # number of participants enrolled per HH ??
@@ -513,14 +538,16 @@ sim_sis <- function(eh_prob = 0.01,
         
         for (part in 1:hh_size[i]) {
           if (prior[part] == 1) {  # S state
-            
+
             eh_prob_x <- plogis(qlogis(eh_prob) +
                                   sum(x[last_x + part, ] * covs_eh) +
-                                  u_pid[last_x + part]) # individual level variability
-            
+                                  u_pid[last_x + part] +                            # individual level variability
+                                  season_effect(d, season_coefs_eh, season_period)) # seasonality variability 
+
             ih_prob_x <- plogis(qlogis(ih_prob) +
                                   sum(x[last_x + part, ] * covs_ih) +
-                                  u_pid[last_x + part]) # individual level variability
+                                  u_pid[last_x + part] +                             # individual level variability
+                                  season_effect(d, season_coefs_ih, season_period))  # seasonality variability
             
             no_inf_prob <- (1 - eh_prob_x) * (1 - ih_prob_x)^prior_inf
             
