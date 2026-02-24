@@ -447,31 +447,70 @@ sim_sis <- function(eh_prob = 0.05,
                     start_prob = c(0.8, 0.2),
                     complete_enroll = TRUE,
                     sigma_pid = 0,                   # standard deviation by individual on logit scale
+                    season_type = c("fourier", "spline"),
                     season_k = 0,                    # number of Fourier harmonics
                     season_period = 365,             # period in days
+                    season_df = 6,                   # spline basis dimension (mgcv::s k)
+                    season_knots = NULL,             # optional knots list for mgcv::s (e.g., list(day = c(0.5, 365.5)))
                     season_coefs_eh = NULL,          # length 2*season_k (sin1, cos1, sin2, cos2, ...)
                     season_coefs_ih = NULL) {         # length 2*season_k (sin1, cos1, sin2, cos2, ...)
   
   epsilon <- 1e-10
 
-  season_effect <- function(d, coefs, period) {
-    if (is.null(coefs) || length(coefs) == 0) return(0)
-    if ((length(coefs) %% 2) != 0) stop("season_coefs must have even length (sin, cos pairs).")
-    k <- length(coefs) / 2
-    harm <- seq_len(k)
-    sin_terms <- sin(2 * pi * harm * d / period)
-    cos_terms <- cos(2 * pi * harm * d / period)
-    sum(coefs[seq(1, length(coefs), by = 2)] * sin_terms +
-          coefs[seq(2, length(coefs), by = 2)] * cos_terms)
-  }
-  if (season_k > 0) {
-    if (is.null(season_coefs_eh)) season_coefs_eh <- rep(0, 2 * season_k)
-    if (is.null(season_coefs_ih)) season_coefs_ih <- rep(0, 2 * season_k)
-    if (!is.null(season_coefs_eh) && length(season_coefs_eh) != 2 * season_k) {
-      stop("season_coefs_eh must have length 2*season_k.")
+  season_type <- match.arg(season_type)
+
+  if (season_type == "fourier") {
+    season_effect <- function(d, coefs, period) {
+      if (is.null(coefs) || length(coefs) == 0) return(0)
+      if ((length(coefs) %% 2) != 0) stop("season_coefs must have even length (sin, cos pairs).")
+      k <- length(coefs) / 2
+      harm <- seq_len(k)
+      sin_terms <- sin(2 * pi * harm * d / period)
+      cos_terms <- cos(2 * pi * harm * d / period)
+      sum(coefs[seq(1, length(coefs), by = 2)] * sin_terms +
+            coefs[seq(2, length(coefs), by = 2)] * cos_terms)
     }
-    if (!is.null(season_coefs_ih) && length(season_coefs_ih) != 2 * season_k) {
-      stop("season_coefs_ih must have length 2*season_k.")
+    if (season_k > 0) {
+      if (is.null(season_coefs_eh)) season_coefs_eh <- rep(0, 2 * season_k)
+      if (is.null(season_coefs_ih)) season_coefs_ih <- rep(0, 2 * season_k)
+      if (!is.null(season_coefs_eh) && length(season_coefs_eh) != 2 * season_k) {
+        stop("season_coefs_eh must have length 2*season_k.")
+      }
+      if (!is.null(season_coefs_ih) && length(season_coefs_ih) != 2 * season_k) {
+        stop("season_coefs_ih must have length 2*season_k.")
+      }
+    }
+  }
+
+  if (season_type == "spline") {
+    day_seq <- seq_len(season_period)
+    knots <- season_knots
+    if (is.null(knots)) {
+      knots <- list(day = c(0.5, season_period + 0.5))
+    }
+    smooth <- mgcv::smoothCon(
+      mgcv::s(day, bs = "cc", k = season_df),
+      data = list(day = day_seq),
+      knots = knots,
+      absorb.cons = TRUE
+    )
+    season_basis <- smooth[[1]]$X
+    if (!is.matrix(season_basis)) season_basis <- as.matrix(season_basis)
+    n_basis <- ncol(season_basis)
+
+    if (is.null(season_coefs_eh)) season_coefs_eh <- rep(0, n_basis)
+    if (is.null(season_coefs_ih)) season_coefs_ih <- rep(0, n_basis)
+    if (length(season_coefs_eh) != n_basis) {
+      stop("season_coefs_eh must have length n_basis (from mgcv spline basis).")
+    }
+    if (length(season_coefs_ih) != n_basis) {
+      stop("season_coefs_ih must have length n_basis (from mgcv spline basis).")
+    }
+
+    season_effect <- function(d, coefs, period) {
+      if (is.null(coefs) || length(coefs) == 0) return(0)
+      doy <- ((d - 1) %% period) + 1
+      sum(season_basis[doy, ] * coefs)
     }
   }
   

@@ -13,6 +13,7 @@ Imports:
     cli,
     glue,
     lifecycle,
+    mgcv,
     methods,
     Rcpp (>= 0.12.0),
     RcppParallel (>= 5.0.1),
