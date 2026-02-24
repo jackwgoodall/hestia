@@ -490,7 +490,7 @@ sim_sis <- function(eh_prob = 0.05,
     }
     smooth <- mgcv::smoothCon(
       mgcv::s(day, bs = "cc", k = season_df),
-      data = list(day = day_seq),
+      data = data.frame(day = day_seq),
       knots = knots,
       absorb.cons = TRUE
     )
