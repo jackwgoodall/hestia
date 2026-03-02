@@ -2,5 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
+.DS_Store
 hesita-JG.Rproj
 splines_demo.R
+JG_hestia.Rproj
