@@ -699,7 +699,7 @@ sim_sis <- function(eh_prob = 0.05,
   
   # Create participant IDs
   part_ids <- list()
-  for(i in 1:n_hh) {o0§
+  for(i in 1:n_hh) {
     part_ids[[i]] <- 1:(hh_size[i])
     if(hh_size[i] == 1) {
       enroll_per_hh[i] <- 1
