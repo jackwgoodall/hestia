@@ -1147,10 +1147,10 @@ sim_sis_from_existing <- function(base_complete_obs,
                                   season_knots = NULL,
                                   season_coefs_eh = NULL,
                                   season_coefs_ih = NULL,
-                                  a_infectious_states = 2,      # Define which of As states are active (default is 2 - i.e. the I state)
-                                  cross_eh_coef = 0,            # A effect on B EH susceptibility
-                                  cross_ih_susc_coef = 0,       # A effect on B IH susceptibility
-                                  cross_ih_trans_coef = 0) {    # A effect on B transmissibility to infected household members
+                                  a_infectious_states = 2,      # Define which of A's states are active (default is 2 - i.e. the I state)
+                                  cross_eh_coef = 0,            # A effect on B EH susceptibility (logit scale)
+                                  cross_ih_susc_coef = 0,       # A effect on B IH susceptibility (logit scale)
+                                  cross_ih_trans_coef = 0) {    # A effect on B transmissible to infected household members (logit scale)
 
   req_cols <- c("t", "part_id", "pid_global", "enroll", "hh_size", "hh_id")
   if (!all(req_cols %in% names(base_complete_obs))) {
@@ -1160,6 +1160,7 @@ sim_sis_from_existing <- function(base_complete_obs,
     stop("gamma must be a single probability in [0, 1].")
   }
 
+  # Pull out the base design
   base_design <- base_complete_obs %>%
     distinct(hh_id, hh_size, part_id, pid_global, enroll) %>%
     arrange(hh_id, part_id)
@@ -1169,6 +1170,7 @@ sim_sis_from_existing <- function(base_complete_obs,
   tmax <- max(base_complete_obs$t)
   n_people <- nrow(base_design)
 
+  # And covariates (from the x subdataframe)
   if (is.null(base_x)) {
     x <- matrix(nrow = n_people, ncol = 0)
     x_colnames <- character(0)
@@ -1183,7 +1185,7 @@ sim_sis_from_existing <- function(base_complete_obs,
   }
   kx <- ncol(x)
   resolve_covs <- function(covs, arg_name) {
-    if (is.null(covs)) return(rep(0, kx))
+    if (is.null(covs)) return(rep(0, kx))   # i.e. no effect of covariates added 
     if (kx == 0) {
       if (length(covs) == 0) return(numeric(0))
       stop(paste0(arg_name, " must be NULL/empty when base_x has no covariate columns."))
@@ -1207,6 +1209,7 @@ sim_sis_from_existing <- function(base_complete_obs,
   covs_ih <- resolve_covs(covs_ih, "covs_ih")
   covs_gamma <- resolve_covs(covs_gamma, "covs_gamma")
 
+  # from main SIS framework
   season_type <- match.arg(season_type)
   if (season_type == "fourier") {
     season_effect <- function(d, coefs, period) {
@@ -1262,13 +1265,15 @@ sim_sis_from_existing <- function(base_complete_obs,
     if (!all(c("pid_global", "t", "state") %in% names(a_complete_obs))) {
       stop("a_complete_obs must include pid_global, t, and state.")
     }
+    
+    # Determine whether they were in the infectious state at last t (converts to 0/1)
     a_prev <- a_complete_obs %>%
       transmute(pid_global = pid_global, t = t, a_active = as.integer(state %in% a_infectious_states))
   } else {
-    a_prev <- expand.grid(pid_global = seq_len(n_people), t = seq_len(tmax)) %>%
-      mutate(a_active = 0L)
-  }
-  a_map <- a_prev %>%
+    a_prev <- expand.grid(pid_global = seq_len(n_people), t = seq_len(tmax)) %>%    # <-This is arguably a bit futile as the whole point
+      mutate(a_active = 0L)                                                         # here is to make a function that will take one state and 
+  }                                                                                 # interact with another - but might at some point try and
+  a_map <- a_prev %>%                                                               # make this universal...
     mutate(key = paste(pid_global, t, sep = "_")) %>%
     select(key, a_active)
   a_active_lookup <- setNames(a_map$a_active, a_map$key)
@@ -1309,13 +1314,13 @@ sim_sis_from_existing <- function(base_complete_obs,
         complete_obs <- bind_rows(complete_obs, new_obs)
         prior <- new_obs$state
       } else {
-        new_states <- integer(hh_n)
+        new_states <- integer(hh_n) # vectors of 0s with length of hh_n to be filled later                   
         a_prev_vec <- sapply(pid_vec, function(pid) {
-          val <- a_active_lookup[[paste(pid, d - 1, sep = "_")]]
+          val <- a_active_lookup[[paste(pid, d - 1, sep = "_")]]      # find the last t's state
           if (is.null(val)) 0L else val
         })
-        prior_inf_active <- sum(prior == 2 & a_prev_vec == 1)
-        prior_inf_inactive <- sum(prior == 2 & a_prev_vec == 0)
+        prior_inf_active <- sum(prior == 2 & a_prev_vec == 1)       # previously a+ and new (b)+
+        prior_inf_inactive <- sum(prior == 2 & a_prev_vec == 0)     # previously a- and new (b)+
         for (part in seq_len(hh_n)) {
           pid <- pid_vec[part]
           xrow <- if (kx > 0) x[pid, ] else numeric(0)
@@ -1324,7 +1329,7 @@ sim_sis_from_existing <- function(base_complete_obs,
                       (if (kx > 0) sum(xrow * covs_eh) else 0) +
                       u_vec[pid] +
                       season_effect(d, season_coefs_eh, season_period) +
-                      cross_eh_coef * a_prev_vec[part]
+                      cross_eh_coef * a_prev_vec[part]                  # turns on/off the a risk 
                     ih_lp <- qlogis(ih_prob) +
                       (if (kx > 0) sum(xrow * covs_ih) else 0) +
                       u_vec[pid] +
@@ -1412,4 +1417,36 @@ sim_coinfection_ab <- function(a_args = list(),
     complete_obs = merged_complete,
     obs = merged_obs
   ))
+}
+
+complete_obs <- a$complete_obs
+x <- a$x
+
+plot_sim <- function(complete_obs,
+                     x,
+                     state = 2) { 
+  
+  indi_covs <- colnames(a$x)[grepl("^x", colnames(a$x))]
+  other_covs <- setdiff(colnames(a$x), c(indi_covs, "pid_global"))
+
+  ## Make co-variate plots 
+  if(length(indi_covs) + length(other_covs) > 0) {
+    complete_obs <- complete_obs %>%
+      left_join(x, by = "pid_global")
+    
+    x %>%
+      select(indi_covs) %>%
+      pivot_longer(cols = indi_covs) %>%
+      group_by(name, value) %>%
+      summarise(n = n()) %>%
+      ggplot(aes(x = name, y = n, fill = factor(value))) + 
+      geom_bar(stat = "identity") + 
+      labs(x = "Covariate",
+           fill = "Present",
+           y = "Count")
+  }
+  covs_plot <- 
+    
+  
+  
 }
