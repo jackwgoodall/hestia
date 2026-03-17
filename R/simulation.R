@@ -1148,9 +1148,9 @@ sim_sis_from_existing <- function(base_complete_obs,
                                   season_coefs_eh = NULL,
                                   season_coefs_ih = NULL,
                                   a_infectious_states = 2,      # Define which of A's states are active (default is 2 - i.e. the I state)
-                                  cross_eh_coef = 0,            # A effect on B EH susceptibility (logit scale)
-                                  cross_ih_susc_coef = 0,       # A effect on B IH susceptibility (logit scale)
-                                  cross_ih_trans_coef = 0) {    # A effect on B transmissible to infected household members (logit scale)
+                                  cross_eh_coef = 0,            # A effect of B on EH susceptibility (logit scale)
+                                  cross_ih_susc_coef = 0,       # A effect of B on IH susceptibility (logit scale)
+                                  cross_ih_trans_coef = 0) {    # A effect of B on transmissible to infected household members (logit scale)
 
   req_cols <- c("t", "part_id", "pid_global", "enroll", "hh_size", "hh_id")
   if (!all(req_cols %in% names(base_complete_obs))) {
@@ -1419,34 +1419,130 @@ sim_coinfection_ab <- function(a_args = list(),
   ))
 }
 
-complete_obs <- a$complete_obs
-x <- a$x
+
+#@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+#@@@  Visualise outputs @@@@@@@@@@@@@@@@@
+#@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
 plot_sim <- function(complete_obs,
                      x,
-                     state = 2) { 
+                     key_state = 2,
+                     simulation_name = "Simulation 1",
+                     folder_location = NULL) { 
   
-  indi_covs <- colnames(a$x)[grepl("^x", colnames(a$x))]
-  other_covs <- setdiff(colnames(a$x), c(indi_covs, "pid_global"))
+  indi_covs <- colnames(x)[grepl("^x", colnames(x))]
+  cat_covs <- setdiff(colnames(x), c(indi_covs, "pid_global"))
 
-  ## Make co-variate plots 
-  if(length(indi_covs) + length(other_covs) > 0) {
+if(length(indi_covs) + length(cat_covs) > 0) {
+
+## Make indi plots 
+if(length(indi_covs) > 0) {
     complete_obs <- complete_obs %>%
       left_join(x, by = "pid_global")
     
-    x %>%
-      select(indi_covs) %>%
+indi_plot <-  x %>%
+      select(all_of(indi_covs)) %>%
       pivot_longer(cols = indi_covs) %>%
-      group_by(name, value) %>%
-      summarise(n = n()) %>%
-      ggplot(aes(x = name, y = n, fill = factor(value))) + 
-      geom_bar(stat = "identity") + 
-      labs(x = "Covariate",
-           fill = "Present",
-           y = "Count")
-  }
-  covs_plot <- 
+      group_by(name) %>%
+      summarise(proportion = sum(value == 1) / sum(value %in% c(0,1))) %>%
+      mutate(group = name)
     
-  
-  
+indi_cov_state_plot <- complete_obs %>%
+  select(c(state, all_of(indi_covs))) %>%
+  pivot_longer(cols = indi_covs) %>%
+  filter(value == 1) %>%
+  group_by(state, name) %>%
+  summarise(sum = n(), .groups = "drop_last") %>%
+  group_by(name) %>%
+  mutate(proportion = sum / sum(sum)) %>%
+  mutate(group = name)
+
 }
+
+  if(length(cat_covs) > 0) {
+    complete_obs <- complete_obs %>%
+      left_join(x, by = "pid_global")  
+  
+  cat_plot <- x %>%
+    select(all_of(cat_covs)) %>%
+    mutate(reference = if_else(rowSums(select(., all_of(cat_covs))) == 0, 1, 0)) %>%
+    pivot_longer(cols = c(all_of(cat_covs), reference)) %>%
+    group_by(name) %>%
+    summarise(proportion = sum(value == 1) / sum(value %in% c(0,1))) %>%
+    mutate(group = "Categorical")
+  
+  cat_cov_state_plot <- complete_obs %>%
+    select(c(state, all_of(cat_covs))) %>%
+    mutate(reference = if_else(rowSums(select(., all_of(cat_covs))) == 0, 1, 0)) %>%
+    pivot_longer(cols = c(cat_covs, "reference")) %>%
+    filter(value == 1) %>%
+    group_by(state, name) %>%
+    summarise(sum = n(), .groups = "drop_last")  %>%
+    group_by(name) %>%
+    mutate(proportion = sum / sum(sum)) %>%
+    mutate(group = "Categorical")
+  }
+  
+  if(length(cat_covs) > 0 && length(indi_covs) > 0) {  
+  cov_prev_plot <- rbind(indi_plot, cat_plot) %>%
+                    mutate(name = factor(name, levels = c("reference", all_of(cat_covs), all_of(indi_covs))))
+  
+  cov_state_plot <- rbind(indi_cov_state_plot, cat_cov_state_plot) %>%
+    mutate(name = factor(name, levels = c("reference", all_of(cat_covs), all_of(indi_covs))))
+  } else 
+    if(length(cat_covs) > 0) { 
+      cov_prev_plot <- cat_plot %>%
+                          mutate(name = factor(name, levels = c("reference", all_of(cat_covs))))
+                          
+      cov_state_plot <- cat_cov_state_plot %>%
+                           mutate(name = factor(name, levels = c("reference", all_of(cat_covs))))
+    } else {
+      cov_prev_plot <- indi_plot
+      cov_state_plot <- indi_cov_state_plot
+      }
+        
+  cov_prev_plot <- cov_prev_plot %>%
+    ggplot(aes(x = name, y = proportion, fill = factor(proportion))) + 
+    geom_bar(stat = "identity") + 
+    labs(x = "Covariates",
+         fill = "Present",
+         y = "Proportion",
+         title = paste0({simulation_name}, " covariate prevalence")) + 
+    facet_wrap(~group, scales = "free_x") + 
+    theme(legend.position = "none")
+  
+  ggsave(filename = paste0({simulation_name}, "_cov_prev_plot.pdf"),
+         plot = cov_prev_plot,
+         path = folder_location,
+         create.dir = TRUE)
+
+  cov_state_plot <- ggplot(cov_state_plot, aes(x = name, y = proportion, fill = as.factor(state))) + 
+    geom_bar(stat = "identity") + 
+    labs(x = "Covariates",
+         y = "Proportion in state",
+         fill = "state",
+         title = paste0({simulation_name}, " covariate \nstate prevalence")) + 
+    facet_wrap(~group, scales = "free_x") 
+  
+  ggsave(filename = paste0({simulation_name}, "_cov_state_plot.pdf"),
+         plot = cov_state_plot,
+         path = folder_location,
+         create.dir = TRUE)
+}
+  # Make temporal plot
+temporal_plot <- complete_obs %>% 
+    group_by(t) %>%
+    summarise(proportion = sum(state == key_state) / sum(!is.na(state))) %>%
+    ggplot(aes(x = t, y = proportion)) + geom_point() + 
+    labs(y = paste0("Proportion in state ", {key_state}),
+         title = paste0({simulation_name}, ": Proportion of participants in state ", {key_state}, " over time"))
+  
+  ggsave(filename = paste0({simulation_name}, "_temporal_plot.pdf"),
+         plot = temporal_plot,
+         path = folder_location,
+         create.dir = TRUE,
+         height = 5,
+         width = max(complete_obs$t) / 25,
+         units = "cm")
+}
+

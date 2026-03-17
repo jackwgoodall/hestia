@@ -1,9 +1,13 @@
 functions {
 
-  // Return the diagonal element for column i so that each column sums to 1.
-  // In this model, transition matrix columns represent the "from" state,
-  // and rows represent the "to" state, so for each column i:
-  //   m[i,i] = 1 - sum_{j != i} m[j,i]
+  // Given an almost-complete transition matrix column, recover the diagonal entry
+  // needed to make that column sum to 1. In this model:
+  // - columns correspond to the state at time t-1 ("from" state)
+  // - rows correspond to the state at time t ("to" state)
+  // So for column i we set:
+  //   trans[i, i] = 1 - sum_{j != i} trans[j, i]
+  // This is used after we update off-diagonal transition probabilities and need
+  // the self-transition to absorb whatever probability mass is left.
   real get_diagonal_element(matrix m, int i){
     real out;
     out = 1;
@@ -15,8 +19,9 @@ functions {
     return out;
   }
 
-  // Stan helper comparable to R's `%in%` for integer arrays.
-  // Returns 1 if `pos` appears in `pos_var`, else 0.
+  // Minimal helper equivalent to R's `%in%` for integer arrays.
+  // It is used to ask questions like "is latent state s one of the infectious
+  // states?" and returns 1 for yes, 0 for no.
   int is_in(int pos, array[] int pos_var) {
     int pos_match;
     array[size(pos_var)] int all_matches;
@@ -34,8 +39,9 @@ functions {
     }
   }
 
-  // Normalize each column so the column sums to 1.
-  // Used after transition edits to ensure valid probabilities.
+  // Force each column of a matrix to sum to 1.
+  // Transition columns must represent proper probability distributions over the
+  // next state, so this is a final cleanup step after edits/multipliers.
   matrix normalize_cols(matrix m) {
     matrix[rows(m), cols(m)] out;
 
@@ -45,7 +51,8 @@ functions {
     return out;
   }
 
-  // Replace exact zeros with epsilon to avoid log(0) and numerical issues.
+  // Replace exact zeros by a small positive value.
+  // This avoids numerical problems later when the code takes `log(...)`.
   matrix replace_zeroes(matrix m, real epsilon) {
     matrix[rows(m), cols(m)] out;
     out = m;
@@ -65,168 +72,270 @@ functions {
 data {
 
   // -------------------------
-  // Core HMM / transition data
+  // Latent-state transition structure
   // -------------------------
-  int n_states; // number of latent epidemiological states
-  // Transition matrix template: columns = state at t-1, rows = state at t.
+
+  // Total number of latent epidemiological states in the HMM.
+  // Example interpretation could be susceptible / exposed / infectious / recovered,
+  // but the model is written generically and only needs the state count and the
+  // transition layout supplied from R.
+  int n_states;
+
+  // Baseline transition matrix template.
+  // Columns are the state at time t-1 and rows are the state at time t.
+  // Some entries are fixed by the data passed in, while others are overwritten
+  // inside the model using fitted parameters.
   matrix[n_states, n_states] trans;
 
-  int n_inf_states; // number of states considered infectious
-  array[n_inf_states] int inf_states; // indices of infectious states
+  // Number of latent states that count as infectious sources for transmission.
+  int n_inf_states;
 
-  // Sparse description of transition entries that are estimated instead of fixed.
+  // Integer indices of those infectious states.
+  // These are used to decide which latent states can generate within-household
+  // infection pressure on other members.
+  array[n_inf_states] int inf_states;
+
+  // Number of transition-matrix entries that are not fixed and will be updated
+  // during model evaluation.
   int n_trans_fit;
-  // Which parameter controls each fitted transition entry.
-  // 0 indicates an infection transition computed from force-of-infection terms.
+
+  // For each fitted transition entry:
+  // - a positive value means use `params[param_index[m]]`
+  // - 0 means this is an infection-driven transition whose probability is built
+  //   from household and extra-household infection pressure instead.
   array[n_trans_fit] int param_index;
-  // [row, col] location in transition matrix for each fitted transition.
+
+  // Location of each fitted transition in the matrix.
+  // `trans_index[m, 1]` is the destination row and `trans_index[m, 2]` is the
+  // origin column for the m-th editable transition entry.
   array[n_trans_fit, 2] int trans_index;
-  // For infection transitions, marks which source infectious states contribute.
-  // All 0 means this is not infection-driven.
+
+  // For infection-driven transitions only, this row vector says which infectious
+  // latent states contribute to the infection hazard for that transition.
+  // A row of all zeros means the transition is not infection-driven.
   array[n_trans_fit, n_states] int source_states;
 
-  int n_params; // number of non-infection transition parameters
+  // Number of non-infection transition probabilities that are estimated on the
+  // logit scale in `logit_params`.
+  int n_params;
 
   // -------------------------
-  // Transition multipliers
+  // Transition multipliers / splits
   // -------------------------
-  // Multipliers allow splitting one baseline transition into multiple branches.
+
+  // Baseline matrix of multiplicative modifiers applied element-wise to `trans`.
+  // This lets one baseline transition be split across several destinations.
   matrix[n_states, n_states] transition_multiplier;
-  int n_mult_fit; // number of multiplier entries that are estimated
-  int n_mult_params; // number of unique multiplier parameters
-  // Index map for multiplier parameters.
-  // Positive value: use mult_params[index]
-  // Negative value: use (1 - mult_params[abs(index)]) style complement.
+
+  // Number of multiplier entries that are themselves estimated.
+  int n_mult_fit;
+
+  // Number of unique free multiplier parameters.
+  int n_mult_params;
+
+  // Map from each editable multiplier entry to a free parameter.
+  // Positive values mean "use mult_params[index]".
+  // Negative values mean "use a complementary 1 - parameter style update" via
+  // the additive expression later in the code.
   array[n_mult_fit] int mult_param_index;
-  // [row, col] locations where multipliers are applied.
+
+  // Row/column locations of editable multiplier entries.
   array[n_mult_fit, 2] int mult_index;
 
   // -------------------------
-  // Household structure
+  // Household layout
   // -------------------------
-  int n_hh; // number of households
-  array[n_hh] int hh_size; // members per household
+
+  // Number of households.
+  int n_hh;
+
+  // Household sizes. The sum over this array is the total number of people.
+  array[n_hh] int hh_size;
 
   // -------------------------
   // Observation data
   // -------------------------
-  int n_obs; // total observation records (all households/times/participants)
-  int n_obs_type; // number of observation channels (e.g., symptoms, tests)
-  int n_unique_obs; // number of unique outcomes per observation type
 
-  // y is ordered by household, then time, then participant.
-  // y[r, k] = observed category for row r and observation type k.
-  // Convention in this model: y == -1 means missing for that channel.
+  // Total number of observation records across all households, all time points,
+  // and all enrolled participants.
+  int n_obs;
+
+  // Number of distinct observation channels per record, for example symptoms,
+  // PCR, serology, or other measurement types.
+  int n_obs_type;
+
+  // Number of possible categorical outcomes for each observation channel.
+  int n_unique_obs;
+
+  // Observed outcomes, ordered by:
+  // 1. household
+  // 2. time
+  // 3. participant within household
+  // `y[r, k]` is the observed category for row r and channel k.
+  // A value of -1 means that channel is missing for that record.
   array[n_obs, n_obs_type] int y;
 
-  array[n_obs] int part_id; // participant id within household for each row
-  array[n_obs] int t_day; // day index for each row
+  // For each observation row, which participant within the household it belongs to.
+  array[n_obs] int part_id;
 
-  // Household-specific indexing into the long observation arrays.
-  array[n_hh] int obs_per_hh; // number of rows belonging to each household
-  array[n_hh] int hh_start_ind; // first row index for each household
-  array[n_hh] int hh_end_ind; // last row index for each household
-  array[n_hh] int hh_tmin; // first modeled day for each household
-  array[n_hh] int hh_tmax; // last modeled day for each household
+  // For each observation row, the observed day index.
+  array[n_obs] int t_day;
 
-  // -------------------------
-  // Covariates for infection pressure
-  // -------------------------
-  int k_ih; // number of intra-household covariates
-  // One row per participant in the full dataset (across all households).
-  matrix[sum(hh_size), k_ih] x_ih;
+  // Household-specific indexing helpers so the long observation arrays can be
+  // sliced into one household at a time.
+  array[n_hh] int obs_per_hh;
+  array[n_hh] int hh_start_ind;
+  array[n_hh] int hh_end_ind;
 
-  int k_eh; // number of extra-household covariates
-  matrix[sum(hh_size), k_eh] x_eh;
+  // Minimum and maximum modeled day for each household.
+  // These determine how many time steps are run in the forward algorithm.
+  array[n_hh] int hh_tmin;
+  array[n_hh] int hh_tmax;
 
   // -------------------------
-  // HMM initial/observation model
+  // Covariates driving infection pressure
   // -------------------------
-  // obs_prob[k] is a matrix with rows = observed category, cols = latent state,
-  // so obs_prob[k][obs_value, state] = P(observed value | latent state).
+
+  // Number of covariates for intra-household infection probability.
+  int k_ih;
+
+  // Number of covariates for extra-household infection probability.
+  int k_eh;
+
+  // Total number of calendar days spanned by the study (= max(hh_tmax)).
+  // Used to size the time-varying covariate arrays below.
+  int T_global;
+
+  // Intra-household covariate array.
+  // `x_ih[t]` is a matrix of dimension sum(hh_size) x k_ih giving each
+  // person's covariate values on calendar day t.
+  array[T_global] matrix[sum(hh_size), k_ih] x_ih;
+
+  // Extra-household covariate array with the same indexing as `x_ih`.
+  array[T_global] matrix[sum(hh_size), k_eh] x_eh;
+
+  // -------------------------
+  // Observation model and initialization
+  // -------------------------
+
+  // Observation probability tables.
+  // For observation type k:
+  // `obs_prob[k][obs_value, state] = P(observed category obs_value | latent state)`
+  // Rows therefore index the observed outcome, and columns index the hidden state.
   array[n_obs_type] matrix[n_unique_obs, n_states] obs_prob;
-  vector[n_states] init_probs; // prior state probabilities at first modeled day
 
-  real epsilon; // tiny floor for numerical stability
-  // Number of distinct intra-household infection probability logits.
-  // Either 1 shared across infectious states, or one per infectious state.
+  // Prior probabilities over the latent state at the first modeled day.
+  vector[n_states] init_probs;
+
+  // Small positive constant used to avoid exact zeros before taking logarithms.
+  real epsilon;
+
+  // Number of distinct intra-household infection probabilities.
+  // This is either:
+  // - 1, meaning the same infection probability is used for all infectious states
+  // - or one value per infectious state
   int n_inf_prob;
 }
 
 parameters {
-  // Unconstrained parameters transformed via inv_logit to (0,1).
+  // Free transition probabilities on the unconstrained real line.
+  // These are transformed with `inv_logit` into (0, 1) inside transformed parameters.
   array[n_params] real logit_params;
+
+  // Same idea for transition multipliers that must live on the probability scale.
   array[n_mult_params] real logit_mult_params;
 
-  // Logistic regression coefficients for infection pressure.
-  vector[k_eh] beta_eh; // extra-household effects
-  vector[k_ih] beta_ih; // intra-household effects
-  real beta0_eh; // extra-household intercept
-  array[n_inf_prob] real beta0_ih; // intra-household intercept(s)
+  // Regression coefficients for the extra-household infection probability.
+  vector[k_eh] beta_eh;
+
+  // Regression coefficients for the intra-household infection probability.
+  vector[k_ih] beta_ih;
+
+  // Intercept for extra-household infection probability.
+  real beta0_eh;
+
+  // Intercept(s) for intra-household infection probability.
+  // There may be one shared intercept or one per infectious-state-specific
+  // infection probability, depending on `n_inf_prob`.
+  array[n_inf_prob] real beta0_ih;
 
 }
 
 transformed parameters {
-  // Household-level contribution to log-likelihood.
-  // Each entry is sum over members of log-sum-exp(alpha) at final time.
+  // Final log-likelihood contribution for each household.
+  // The model block later adds `sum(llik_final)` directly to the target.
   vector[n_hh] llik_final;
 
-  // Participant-level probabilities from logistic models.
-  // ih_prob[, c] = probability of transmission from infectious-state group c.
+  // Person-level within-household infection probabilities on the probability scale.
+  // Row = person, column = infectious-state-specific probability slot.
   matrix[sum(hh_size), n_inf_prob] ih_prob;
-  vector[sum(hh_size)] eh_prob; // extra-household infection probability
 
-  // Stores per-person log forward probabilities over time.
-  // Rows are grouped by participant/state (household by household).
+  // Person-level extra-household infection probabilities on the probability scale.
+  vector[sum(hh_size)] eh_prob;
+
+  // Global storage for log forward probabilities.
+  // For each person we store `n_states` rows, and columns correspond to time steps.
+  // Row blocks are stacked household by household, participant by participant.
   matrix[sum(hh_size) * n_states, max(hh_tmax) - min(hh_tmin) + 1] logalpha;
 
-  // Working transition matrix updated each step.
+  // Working transition matrix that is repeatedly edited as the recursion proceeds.
   matrix[n_states, n_states] trans_temp;
 
-  // Probability-scale transition parameters.
+  // Probability-scale versions of `logit_params` and `logit_mult_params`.
   array[n_params] real params;
   array[n_mult_params] real mult_params;
 
-  // Map unconstrained real values to (0,1).
+  // Map unconstrained reals to probabilities.
   params = inv_logit(logit_params);
   mult_params = inv_logit(logit_mult_params);
 
-  // Intra-household infection probabilities (possibly one column or many).
+  // Convert the within-household logistic regression to person-specific
+  // infection probabilities. Each column corresponds to one infection-probability
+  // slot referenced later by infectious states.
   for(i in 1:n_inf_prob) {
     ih_prob[,i] = inv_logit(beta0_ih[i] + x_ih * beta_ih);
   }
 
-  // Extra-household infection probability per participant.
+  // Convert the extra-household logistic regression to person-specific
+  // infection probabilities.
   eh_prob = inv_logit(beta0_eh + x_eh * beta_eh);
 
-  // Start from baseline transition matrix template.
+  // Start from the baseline transition template.
   trans_temp = trans;
 
 
-  // Iterate households independently in the forward algorithm.
+  // Households are conditionally independent given the parameters, so the
+  // forward algorithm can be run one household at a time.
   for(h in 1:n_hh) {
 
-    // alpha is the normalized forward probability on probability scale.
+    // Normalized forward probabilities for this household only.
+    // Each participant contributes a block of `n_states` rows.
     matrix[hh_size[h] * n_states, max(hh_tmax) - min(hh_tmin) + 1] alpha;
 
-    // llik[p, t] stores log normalizing constants for each person/time.
+    // Per-participant, per-time log normalizing constants from the forward pass.
+    // These are later used to build the household log-likelihood.
     matrix[hh_size[h], max(hh_tmax) - min(hh_tmin) + 1] llik;
 
-    // Household-specific slices of observation arrays.
+    // Household-specific slices of the observation arrays.
     array[obs_per_hh[h], n_obs_type] int y_hh;
     array[obs_per_hh[h]] int part_id_hh;
     array[obs_per_hh[h]] int t_day_hh;
 
-    int index; // pointer to next observation row for this household
+    // Pointer to the next observation row to be consumed for this household.
+    int index;
 
-    // For each participant i and infectious state s,
-    // i_rows[i,s] points to that participant/state row in alpha/logalpha.
+    // For participant i and latent state s, `i_rows[i, s]` stores the row index
+    // in `alpha` that corresponds to that participant-state combination.
+    // This is mainly used to pull out the probability that another household
+    // member is currently in infectious state s.
     array[hh_size[h], n_states] int i_rows;
 
-    // Offset in participant indexing across previous households.
+    // Number of participants in all households before household h.
+    // This provides the offset into person-level vectors like `ih_prob` and `eh_prob`.
     int last_lik;
 
-    // 1 if current participant/time has an observation row, else 0.
+    // Indicator for whether the current participant/day actually has an observation
+    // row waiting in the household-specific observation arrays.
     int obs_switch;
 
     llik = rep_matrix(0, hh_size[h], max(hh_tmax) - min(hh_tmin) + 1);
@@ -237,7 +346,7 @@ transformed parameters {
       last_lik = sum(hh_size[1:(h-1)]);
     }
 
-    // Subset long vectors/matrices to this household's observation rows.
+    // Pull just this household's observations out of the long stacked arrays.
     y_hh = y[(hh_start_ind[h]):(hh_end_ind[h]),];
     t_day_hh = t_day[(hh_start_ind[h]):(hh_end_ind[h])];
     part_id_hh = part_id[(hh_start_ind[h]):(hh_end_ind[h])];
@@ -247,30 +356,39 @@ transformed parameters {
     { // START FORWARD ALGORITHM
 
     // -------------------------
-    // Initialization at first modeled day (t = 1)
+    // Initialization at the first modeled day
     // -------------------------
+    // For each participant, start from the prior state distribution `init_probs`
+    // and then multiply by any observation likelihood available at day 1.
     for(i in 1:hh_size[h]) {
+      // `ref` gives the row block in the global `logalpha` matrix corresponding
+      // to participant i in this household.
       array[n_states] int ref;
 
-      // Observation likelihood contribution for this person/time.
-      // Default is 1 (no information) when there is no observation/missingness.
+      // Observation likelihood contributions for this participant at this time.
+      // `obs[k, s]` will hold P(observation type k | latent state s).
+      // If there is no observation for a channel, the entry is set to 1 so it
+      // does not change the latent-state probabilities.
       matrix[n_obs_type, n_states] obs;
 
-      // Ref gives the row block in global logalpha for participant i.
       ref = linspaced_int_array(n_states,
                                 n_states * last_lik + n_states * (i-1) + 1,
                                 n_states * last_lik + n_states * (i-1) + n_states);
 
       obs_switch = 0;
 
-      // Detect whether the next observation row belongs to (day 1, participant i).
+      // Check whether the next stored observation row belongs to participant i
+      // on the first modeled day. Because the input is ordered by household,
+      // then time, then participant, a single forward-moving pointer is enough.
       if(t_day_hh[index] == 1) {
         if(part_id_hh[index] == i) {
           obs_switch = 1;
         }
       }
 
-      // Build observation likelihood vectors by state.
+      // Build the observation-likelihood matrix.
+      // For observed channels, pull the appropriate row from `obs_prob`.
+      // For missing channels (coded -1), leave the contribution neutral at 1.
       if(obs_switch == 1) {
         for(k in 1:n_obs_type) {
           if(y_hh[index, k] != -1) {
@@ -283,50 +401,65 @@ transformed parameters {
         obs = rep_matrix(1, n_obs_type, n_states);
       }
 
-      // Advance observation pointer only when an obs row was consumed.
+      // Consume the observation row only if it was actually matched here.
       if(obs_switch == 1) {
        index = min(index + 1, hh_end_ind[h] - hh_start_ind[h] + 1);
       }
 
-      // Initialize forward log-probability with prior state probabilities.
+      // Start the forward recursion from the initial state probabilities.
       logalpha[ref, 1] = log(init_probs);
 
-      // Add log-likelihood contributions from each observation type.
+      // Add observation information on the log scale, one observation type at a time.
       for(k in 1:n_obs_type) {
         logalpha[ref, 1] = logalpha[ref, 1] + to_vector(log(obs[k,]));
       }
 
-      // Precompute row indices of infectious states for participant i.
+      // Record the alpha-row locations for infectious states for this participant.
+      // Later, when participant p's infection hazard is computed, these indices let
+      // the model look up each household member's probability of occupying an
+      // infectious latent state at the previous time.
       for(s in inf_states) {
         i_rows[i, s] = n_states * (i-1) + s;
       }
 
-      // log-sum-exp is the normalization constant for this participant/time.
+      // `log_sum_exp` is the normalization constant for this participant at time 1.
       llik[i, 1] = log_sum_exp(logalpha[ref,1]);
 
-      // Softmax gives normalized forward state probabilities.
+      // Convert the unnormalized log forward values into normalized probabilities.
       alpha[(n_states * (i-1) + 1):(n_states * (i-1) + n_states), 1] =
         softmax(logalpha[ref,1]);
 
-    } // end participant loop (initialization)
+    } // end participant loop for initialization
 
     // -------------------------
-    // Recursion for t = 2..T
+    // Forward recursion for later days
     // -------------------------
     for (tt in 2:(hh_tmax[h] - hh_tmin[h] + 1)) {
 
+      // Update one participant at a time, conditioning on the other household
+      // members' filtering distributions from the previous day.
       for(p in 1:hh_size[h]) {
-        // no_inf_prob[s] = probability participant p avoids infection pressure
-        // associated with infectious state s from all household members.
+        // For each latent state s, `no_inf_prob[s]` will hold the probability that
+        // participant p avoids all within-household infection pressure associated
+        // with source state s during this time step.
         array[n_states] real no_inf_prob;
 
-        // no_hh_inf_prob[j,s] = probability p avoids infection from member j
-        // via infectious state s.
+        // `no_hh_inf_prob[j, s]` is the probability that participant p avoids
+        // infection from household member j through infectious state s.
+        // The eventual `prod(...)` across j assumes independent avoidance across
+        // household members conditional on the latent state probabilities.
         matrix[hh_size[h], n_states] no_hh_inf_prob;
 
+        // Row block in `logalpha` for participant p.
         array[n_states] int ref;
-        vector[n_states] logalpha_temp; // previous-time log forward state probs
+
+        // Previous-time forward probabilities for participant p on the log scale.
+        vector[n_states] logalpha_temp;
+
+        // Observation likelihood matrix for participant p at time tt.
         matrix[n_obs_type, n_states] obs;
+
+        // Working copy of the transition-multiplier matrix.
         matrix[n_states, n_states] mult_temp;
 
         ref = linspaced_int_array(n_states,
@@ -337,7 +470,7 @@ transformed parameters {
 
         obs_switch = 0;
 
-        // Detect whether next observation row belongs to (day tt, participant p).
+        // Check whether the next stored observation belongs to participant p on day tt.
         if(t_day_hh[index] == tt) {
           if(part_id_hh[index] == p) {
             obs_switch = 1;
@@ -360,43 +493,50 @@ transformed parameters {
           index = min(index + 1, hh_end_ind[h] - hh_start_ind[h] + 1);
         }
 
-        // ct indexes which intra-household infection intercept column to use.
+        // Counter over the within-household infection-probability columns.
+        // It advances only when the current latent state is infectious.
         int ct = 1;
 
-        // Compute probability of avoiding infection contribution by state.
+        // Build the probability of avoiding infection from the household.
         for(s in 1:n_states) {
           if(is_in(s, inf_states)) {
 
-            // For each potential source j:
-            // P(avoid from j via state s) =
-            //   P(j in infectious state s) * (1 - ih_prob[p,ct])
-            //   + P(j not in state s)
+            // For a given potential source member j and infectious state s:
+            // - with probability alpha[j,s] they are in infectious state s, so
+            //   avoidance contributes (1 - ih_prob[p, ct])
+            // - otherwise they are not in state s, which contributes 1
+            // Summing those two cases gives the marginal avoidance probability
+            // from member j via source state s.
             no_hh_inf_prob[,s] =
               to_vector(alpha[i_rows[, s], tt-1]) * (1 - ih_prob[last_lik + p, ct])
               + (1 - to_vector(alpha[i_rows[,s], tt-1]));
 
             ct += 1;
 
-            // No self-infection contribution.
+            // A person cannot infect themselves.
             no_hh_inf_prob[p, s] = 1;
 
           } else {
-            // Non-infectious states contribute no infection pressure.
+            // Non-infectious latent states create no infection pressure.
             no_hh_inf_prob[,s] = rep_vector(1, hh_size[h]);
           }
 
-          // Combine independent source contributions multiplicatively.
+          // Multiply across household members to get the total probability of
+          // avoiding infection pressure associated with state s.
           no_inf_prob[s] = prod(no_hh_inf_prob[,s]);
         }
 
-        // Fill transition entries designated as estimated.
+        // Update whichever transition probabilities are being estimated.
         for(m in 1:n_trans_fit) {
           if(sum(source_states[m,]) == 0) {
-            // Non-infection transition: direct parameter.
+            // Ordinary non-infection transition:
+            // pull a direct probability parameter from `params`.
             trans_temp[trans_index[m, 1],trans_index[m, 2]] = params[param_index[m]];
           } else {
-            // Infection transition: combine selected no-infection terms,
-            // then include extra-household infection pressure.
+            // Infection-driven transition:
+            // combine the relevant no-infection terms across the chosen source
+            // states, then combine that with the probability of avoiding infection
+            // from outside the household.
             real no_inf;
             no_inf = 1;
             for(s in 1:n_states) {
@@ -404,14 +544,18 @@ transformed parameters {
                 no_inf = no_inf * no_inf_prob[s];
               }
             }
-            // 1 - [prob no household infection * prob no external infection]
+
+            // Probability of infection = 1 - probability of avoiding both:
+            // - all relevant household infection routes
+            // - extra-household infection
             trans_temp[trans_index[m, 1],trans_index[m, 2]] =
               1 - (no_inf * (1 - eh_prob[last_lik + p]));
           }
         }
 
-        // Apply estimated transition multipliers.
-        // Reset each time because updates can be self-referential.
+        // Update any transition-splitting multipliers that are being estimated.
+        // `mult_temp` is reset from the baseline matrix each time step because
+        // some updates depend on the current unmodified multiplier values.
         mult_temp = transition_multiplier;
         for(m in 1:n_mult_fit) {
           if(mult_param_index[m] > 0) {
@@ -423,36 +567,39 @@ transformed parameters {
           }
         }
 
-        // Transition split: element-wise scaling.
+        // Apply multiplier-based transition splits element-wise.
         trans_temp = trans_temp .* mult_temp;
 
-        // Recompute diagonals so each column remains stochastic.
+        // Recompute the diagonal entries so each "from-state" column still sums to 1.
         for(i in 1:cols(trans_temp)) {
           trans_temp[i,i] = get_diagonal_element(trans_temp, i);
         }
 
-        // Stabilize and renormalize after edits.
+        // Small numerical safeguards before moving to log space.
         trans_temp = replace_zeroes(trans_temp, epsilon);
         trans_temp = normalize_cols(trans_temp);
 
-        // Forward recursion:
-        // predicted state prob = trans * previous state prob,
-        // then incorporate observation likelihood in log-space.
+        // Standard HMM forward step:
+        // 1. propagate yesterday's filtering distribution through the transition matrix
+        // 2. multiply by today's observation likelihood
+        // The multiplication is done on the probability scale and then logged.
         logalpha[ref, tt] = log(trans_temp * exp(logalpha_temp));
         for(k in 1:n_obs_type) {
           logalpha[ref, tt] = logalpha[ref, tt] + to_vector(log(obs[k,]));
         }
 
-        // Normalize for stable recursion and to obtain filtering probabilities.
+        // Normalize to recover the filtering distribution over latent states.
         alpha[(n_states * (p-1) + 1):(n_states * (p-1) + n_states), tt] =
           softmax(logalpha[ref,tt]);
 
-        // Save log normalization constant for likelihood.
+        // Store the normalizing constant, which is the participant/time-point
+        // log-likelihood contribution from the forward recursion.
         llik[p, tt] = log_sum_exp(logalpha[ref,tt]);
 
       } // end participant loop at time tt
 
-      // This implementation uses only final-time contributions per household.
+      // The likelihood contribution used by this model is the sum of the final-day
+      // participant log normalizing constants for the household.
       if(tt == (hh_tmax[h] - hh_tmin[h] + 1)) {
         llik_final[h] = sum(llik[,tt]);
       }
@@ -466,11 +613,13 @@ transformed parameters {
 
 model {
 
-  // Weakly informative priors for infection covariate effects.
+  // Weakly informative priors for the infection-probability regressions.
+  // Because these coefficients are on the logit scale, a normal(-3, 3) prior
+  // places substantial mass on small probabilities while still allowing wide variation.
   beta_eh ~ normal(-3, 3);
   beta_ih ~ normal(-3, 3);
 
-  // Add household log-likelihood contributions (computed in transformed parameters).
+  // Add the household log-likelihoods that were accumulated during the forward pass.
   target += sum(llik_final);
 
 }
