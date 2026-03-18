@@ -266,12 +266,15 @@ transformed parameters {
   // The model block later adds `sum(llik_final)` directly to the target.
   vector[n_hh] llik_final;
 
-  // Person-level within-household infection probabilities on the probability scale.
-  // Row = person, column = infectious-state-specific probability slot.
-  matrix[sum(hh_size), n_inf_prob] ih_prob;
+  // Person- and time-varying within-household infection probabilities.
+  // `ih_prob[c][person, t]` is the infection probability for person `person`
+  // on day `t` via the c-th infectious-state probability slot.
+  array[n_inf_prob] matrix[sum(hh_size), T_global] ih_prob;
 
-  // Person-level extra-household infection probabilities on the probability scale.
-  vector[sum(hh_size)] eh_prob;
+  // Person- and time-varying extra-household infection probabilities.
+  // `eh_prob[person, t]` is the extra-household infection probability for
+  // person `person` on day `t`.
+  matrix[sum(hh_size), T_global] eh_prob;
 
   // Global storage for log forward probabilities.
   // For each person we store `n_states` rows, and columns correspond to time steps.
@@ -289,16 +292,14 @@ transformed parameters {
   params = inv_logit(logit_params);
   mult_params = inv_logit(logit_mult_params);
 
-  // Convert the within-household logistic regression to person-specific
-  // infection probabilities. Each column corresponds to one infection-probability
-  // slot referenced later by infectious states.
-  for(i in 1:n_inf_prob) {
-    ih_prob[,i] = inv_logit(beta0_ih[i] + x_ih * beta_ih);
+  // Convert the logistic regressions to person- and time-specific probabilities.
+  // Outer loop runs over days; inner loop over infection-probability slots.
+  for(tt in 1:T_global) {
+    for(i in 1:n_inf_prob) {
+      ih_prob[i][,tt] = inv_logit(beta0_ih[i] + x_ih[tt] * beta_ih);
+    }
+    eh_prob[,tt] = inv_logit(beta0_eh + x_eh[tt] * beta_eh);
   }
-
-  // Convert the extra-household logistic regression to person-specific
-  // infection probabilities.
-  eh_prob = inv_logit(beta0_eh + x_eh * beta_eh);
 
   // Start from the baseline transition template.
   trans_temp = trans;
@@ -436,6 +437,13 @@ transformed parameters {
     // -------------------------
     for (tt in 2:(hh_tmax[h] - hh_tmin[h] + 1)) {
 
+      // Convert the household-relative time index to the global day index
+      // (1..T_global). Different households may start on different days, so
+      // the offset hh_tmin[h] - 1 is needed to look up the correct covariate
+      // values for this time step.
+      int actual_day;
+      actual_day = hh_tmin[h] + tt - 1;
+
       // Update one participant at a time, conditioning on the other household
       // members' filtering distributions from the previous day.
       for(p in 1:hh_size[h]) {
@@ -508,7 +516,7 @@ transformed parameters {
             // Summing those two cases gives the marginal avoidance probability
             // from member j via source state s.
             no_hh_inf_prob[,s] =
-              to_vector(alpha[i_rows[, s], tt-1]) * (1 - ih_prob[last_lik + p, ct])
+              to_vector(alpha[i_rows[, s], tt-1]) * (1 - ih_prob[ct][last_lik + p, actual_day])
               + (1 - to_vector(alpha[i_rows[,s], tt-1]));
 
             ct += 1;
@@ -549,7 +557,7 @@ transformed parameters {
             // - all relevant household infection routes
             // - extra-household infection
             trans_temp[trans_index[m, 1],trans_index[m, 2]] =
-              1 - (no_inf * (1 - eh_prob[last_lik + p]));
+              1 - (no_inf * (1 - eh_prob[last_lik + p, actual_day]));
           }
         }
 
