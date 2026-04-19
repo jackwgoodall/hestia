@@ -519,11 +519,21 @@ make_stan_data_tv <- function(inf_model, obs_model, data, init_probs, epsilon = 
 #' @param save_states indicator for whether to save state probabilities
 #'
 #' @export
-run_model <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-10,
-                      ih_cov = NULL, eh_cov = NULL, time_varying = FALSE,
-                      file = "stan/hmm.stan", iter = 2000, chains = 4,
-                      cores = getOption("mc.cores", 1L), init = NULL,
-                      save_chains = TRUE, save_states = TRUE) {
+run_model <- function(inf_model, 
+                      obs_model, 
+                      data, 
+                      init_probs, 
+                      epsilon = 1e-10,
+                      ih_cov = NULL, 
+                      eh_cov = NULL, 
+                      time_varying = FALSE,
+                      file = "stan/hmm.stan", 
+                      iter = 2000, 
+                      chains = 4,
+                      cores = getOption("mc.cores", 1L), 
+                      init = NULL,
+                      save_chains = TRUE, 
+                      save_states = TRUE) {
 
   if (time_varying) {
     dat_stan <- make_stan_data_tv(inf_model, obs_model, data, init_probs, epsilon, ih_cov, eh_cov)
