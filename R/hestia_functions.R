@@ -579,7 +579,7 @@ run_model <- function(inf_model,
     init <- rep(list(init), chains)
   }
   
-  # ── rstan ──────────────────────────────────────────────────────────────────
+  # rstan -------
   if (backend == "rstan") {
     
     library(rstan)
@@ -601,14 +601,25 @@ run_model <- function(inf_model,
         chains  = chains,
         cores   = cores,
         init    = init,
-        pars    = "logalpha",
+        pars    = c("logalpha", "ih_prob", "eh_prob"),
         include = FALSE
       )
     }
-    
+  
+    # cmdstanr -------  
   } else if (backend == "cmdstanr") {
     
     library(cmdstanr)
+    
+    # Helper to coerce data frames to matrices in the stan data list
+    # cmdstanr is stricter than rstan about data types
+    prep_stan_data_cmdstanr <- function(dat_stan) {
+      lapply(dat_stan, function(x) {
+        if (is.data.frame(x)) as.matrix(x) else x
+      })
+    }
+    
+    dat_stan <- prep_stan_data_cmdstanr(dat_stan)
     
     mod <- cmdstanr::cmdstan_model(file)
     
@@ -623,16 +634,6 @@ run_model <- function(inf_model,
       )
       
     } else {
-      # Dynamically get all variable names from the compiled model
-      # then exclude the large logalpha matrix rather than hardcoding
-      # what to keep — this way new parameters are never accidentally dropped
-      # I've excluded the ih_probs and eh_probs too as they are large are rarely used post processing
-      all_vars <- c(
-        names(mod$variables()$parameters),
-        names(mod$variables()$transformed_parameters)
-      )
-      
-      keep_vars <- setdiff(all_vars, c("logalpha", "ih_prob", "eh_prob"))
       
       stan_fit <- mod$sample(
         data            = dat_stan,
@@ -640,8 +641,7 @@ run_model <- function(inf_model,
         iter_sampling   = iter / 2,
         chains          = chains,
         parallel_chains = cores,
-        init            = init,
-        variables       = keep_vars
+        init            = init
       )
     }
   }
