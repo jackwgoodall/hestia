@@ -10,7 +10,7 @@
 #SBATCH --output=parallel_%j.log      # Standard output and error log
 date;hostname;pwd
 
-source ~/miniconda3/etc/profile.d/conda.sh 
+source ~/miniconda3/etc/profile.d/conda.sh
 
 conda activate stan
 

@@ -1,5 +1,5 @@
 library(splines)
-source()
+source("../R/simulation.R")
 
 # HPC setup 
 ## Setup viral
