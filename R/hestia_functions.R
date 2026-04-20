@@ -532,7 +532,10 @@ run_model <- function(inf_model,
                       file       = "stan/hmm.stan", 
                       iter       = 2000, 
                       chains     = 4,
-                      cores      = getOption("mc.cores", 1L), 
+                      parallel_chains = getOption("mc.cores", 1L), 
+                      threads_per_chain = 4,    # 16 cores total for default
+                      adapt_delta       = 0.9,
+                      max_treedepth     = 12,
                       init       = NULL,
                       save_chains = TRUE, 
                       save_states = TRUE,
@@ -621,7 +624,8 @@ run_model <- function(inf_model,
     
     dat_stan <- prep_stan_data_cmdstanr(dat_stan)
     
-    mod <- cmdstanr::cmdstan_model(file)
+    mod <- cmdstanr::cmdstan_model(file,
+                                   cpp_options = list(stan_threads = TRUE))
     
     if (save_states) {
       stan_fit <- mod$sample(
@@ -640,7 +644,10 @@ run_model <- function(inf_model,
         iter_warmup     = iter / 2,
         iter_sampling   = iter / 2,
         chains          = chains,
-        parallel_chains = cores,
+        parallel_chains = parallel_chains,
+        threads_per_chain = threads_per_chain,
+        adapt_delta = adapt_delta,
+        max_treedepth = max_treedepth,
         init            = init
       )
     }
@@ -649,9 +656,4 @@ run_model <- function(inf_model,
   return(stan_fit)
   
 }
-
-  
-
-
-
 
