@@ -508,84 +508,149 @@ make_stan_data_tv <- function(inf_model, obs_model, data, init_probs, epsilon = 
 #'   \code{ih_cov} but for extra-household covariates.
 #' @param time_varying logical. If \code{TRUE}, covariates are treated as
 #'   varying by person and day and \code{make_stan_data_tv} is used to build
-#'   the Stan data list. If \code{FALSE} (default), the standard
-#'   \code{make_stan_data} is used.
+#'   the Stan data list. Defaults to \code{FALSE}.
 #' @param file file path to stan model
-#' @param iter number of MCMC iterations
+#' @param iter number of MCMC iterations (total - split equally into warmup and
+#'   sampling for cmdstanr)
 #' @param chains number of MCMC chains
 #' @param cores number of cores for parallelization
-#' @param init initial conditionas for MCMC chains
+#' @param init initial conditions for MCMC chains
 #' @param save_chains indicator for whether to save MCMC chains
 #' @param save_states indicator for whether to save state probabilities
+#' @param backend character string, either \code{"rstan"} or \code{"cmdstanr"}.
+#'   Defaults to \code{"rstan"}.
 #'
 #' @export
 run_model <- function(inf_model, 
                       obs_model, 
                       data, 
                       init_probs, 
-                      epsilon = 1e-10,
-                      ih_cov = NULL, 
-                      eh_cov = NULL, 
+                      epsilon    = 1e-10,
+                      ih_cov     = NULL, 
+                      eh_cov     = NULL, 
                       time_varying = FALSE,
-                      file = "stan/hmm.stan", 
-                      iter = 2000, 
-                      chains = 4,
-                      cores = getOption("mc.cores", 1L), 
-                      init = NULL,
+                      file       = "stan/hmm.stan", 
+                      iter       = 2000, 
+                      chains     = 4,
+                      cores      = getOption("mc.cores", 1L), 
+                      init       = NULL,
                       save_chains = TRUE, 
-                      save_states = TRUE) {
-
+                      save_states = TRUE,
+                      backend    = c("rstan", "cmdstanr")) {
+  
+  # Validate backend argument
+  backend <- match.arg(backend)
+  
+  # Check the requested backend is installed
+  if (backend == "rstan" && !requireNamespace("rstan", quietly = TRUE)) {
+    stop("rstan is not installed. Install it with install.packages('rstan') or use backend = 'cmdstanr'.")
+  }
+  if (backend == "cmdstanr" && !requireNamespace("cmdstanr", quietly = TRUE)) {
+    stop("cmdstanr is not installed. See https://mc-stan.org/cmdstanr/ or use backend = 'rstan'.")
+  }
+  
+  # Build Stan data list
   if (time_varying) {
     dat_stan <- make_stan_data_tv(inf_model, obs_model, data, init_probs, epsilon, ih_cov, eh_cov)
   } else {
     dat_stan <- make_stan_data(inf_model, obs_model, data, init_probs, epsilon, ih_cov, eh_cov)
   }
-
-  if(is.null(init)) {
-    if(!is.null(eh_cov) & !is.null(ih_cov)) {
-      
-      init = rep(list(list(logit_params = array(rep(logit(0.5), dat_stan$n_params)),
-                           logit_mult_params = array(rep(logit(0.5), dat_stan$n_mult_params)),
-                           beta_eh = rep(0, dat_stan$k_eh),
-                           beta_ih = rep(0, dat_stan$k_ih),
-                           beta0_eh = logit(0.02),
-                           beta0_ih = array(rep(logit(0.02), dat_stan$n_inf_prob)))), 4)
-      
+  
+  # Build init list if not supplied
+  if (is.null(init)) {
+    if (!is.null(eh_cov) & !is.null(ih_cov)) {
+      init <- rep(list(list(
+        logit_params       = array(rep(logit(0.5), dat_stan$n_params)),
+        logit_mult_params  = array(rep(logit(0.5), dat_stan$n_mult_params)),
+        beta_eh            = rep(0, dat_stan$k_eh),
+        beta_ih            = rep(0, dat_stan$k_ih),
+        beta0_eh           = logit(0.02),
+        beta0_ih           = array(rep(logit(0.02), dat_stan$n_inf_prob))
+      )), chains)
     } else {
-      
-      init = rep(list(list(logit_params = array(rep(logit(0.5), dat_stan$n_params)),
-                           logit_mult_params = array(rep(logit(0.5), dat_stan$n_mult_params)),
-                           beta_eh = logit(0.02),
-                           beta_ih = array(rep(logit(0.02), dat_stan$n_inf_prob)))), 4)
-      
+      init <- rep(list(list(
+        logit_params       = array(rep(logit(0.5), dat_stan$n_params)),
+        logit_mult_params  = array(rep(logit(0.5), dat_stan$n_mult_params)),
+        beta_eh            = logit(0.02),
+        beta_ih            = array(rep(logit(0.02), dat_stan$n_inf_prob))
+      )), chains)
+    }
+  } else {
+    init <- rep(list(init), chains)
+  }
+  
+  # ── rstan ──────────────────────────────────────────────────────────────────
+  if (backend == "rstan") {
+    
+    library(rstan)
+    
+    if (save_states) {
+      stan_fit <- rstan::stan(
+        file   = file,
+        data   = dat_stan,
+        iter   = iter,
+        chains = chains,
+        cores  = cores,
+        init   = init
+      )
+    } else {
+      stan_fit <- rstan::stan(
+        file    = file,
+        data    = dat_stan,
+        iter    = iter,
+        chains  = chains,
+        cores   = cores,
+        init    = init,
+        pars    = "logalpha",
+        include = FALSE
+      )
     }
     
-  } else {
-    init <- rep(list(init), 4)
+  } else if (backend == "cmdstanr") {
+    
+    library(cmdstanr)
+    
+    mod <- cmdstanr::cmdstan_model(file)
+    
+    if (save_states) {
+      stan_fit <- mod$sample(
+        data            = dat_stan,
+        iter_warmup     = iter / 2,
+        iter_sampling   = iter / 2,
+        chains          = chains,
+        parallel_chains = cores,
+        init            = init
+      )
+      
+    } else {
+      # Dynamically get all variable names from the compiled model
+      # then exclude the large logalpha matrix rather than hardcoding
+      # what to keep — this way new parameters are never accidentally dropped
+      # I've excluded the ih_probs and eh_probs too as they are large are rarely used post processing
+      all_vars <- c(
+        names(mod$variables()$parameters),
+        names(mod$variables()$transformed_parameters)
+      )
+      
+      keep_vars <- setdiff(all_vars, c("logalpha", "ih_prob", "eh_prob"))
+      
+      stan_fit <- mod$sample(
+        data            = dat_stan,
+        iter_warmup     = iter / 2,
+        iter_sampling   = iter / 2,
+        chains          = chains,
+        parallel_chains = cores,
+        init            = init,
+        variables       = keep_vars
+      )
+    }
   }
-
-  if(save_states) {
-    stan_fit <- stan(file = file,
-                     data = dat_stan,
-                     iter = iter,
-                     chains = chains,
-                     cores = cores,
-                     init = init)
-  } else {
-    stan_fit <- stan(file = file,
-                     data = dat_stan,
-                     iter = iter,
-                     chains = chains,
-                     cores = cores,
-                     init = init,
-                     pars = "logalpha",
-                     include = FALSE)
-  }
-
+  
   return(stan_fit)
-
+  
 }
 
+  
 
 
 
