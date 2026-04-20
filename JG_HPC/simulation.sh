@@ -10,6 +10,8 @@
 #SBATCH --output=parallel_%j.log      # Standard output and error log
 date;hostname;pwd
 
+conda 
+
 conda activate stan
 
 echo "Simulation Set up"
