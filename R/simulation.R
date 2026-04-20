@@ -1,4 +1,3 @@
-
 make_outcome <- function(df, col, p1) {
   mutate(df, )
 }

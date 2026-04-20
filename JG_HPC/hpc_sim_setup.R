@@ -1,4 +1,6 @@
 library(splines)
+library(mgcv)
+library(dplyr)
 source("../R/simulation.R")
 
 # HPC setup 
