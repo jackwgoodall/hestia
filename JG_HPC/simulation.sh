@@ -10,12 +10,12 @@
 #SBATCH --output=parallel_%j.log      # Standard output and error log
 date;hostname;pwd
 
-conda 
+source ~/miniconda3/etc/profile.d/conda.sh 
 
 conda activate stan
 
 echo "Simulation Set up"
 
-Rscript sim_setup.R
+Rscript hpc_sim_setup.R
 
 date
