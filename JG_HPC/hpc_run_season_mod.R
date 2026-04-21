@@ -14,7 +14,7 @@ obs_process <- make_observation_model(pcr = c("S" = 0.05, "I" = 0.95))
 age_season_mod <- run_model(inf_model = inf_process, 
                             obs_model = obs_process, 
                             data = bac_viral_sim, 
-                            file = file.path("inst", "stan", "hmm_tv_cov_reduce_sum.stan"),
+                            file = file.path("..", "inst", "stan", "hmm_tv_cov_reduce_sum.stan"),
                             init_probs = c(0.7, 
                                            0.3),
                             ih_cov = x_ih_all,   # 3D array [T, N, k]
