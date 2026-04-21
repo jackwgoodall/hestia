@@ -4,6 +4,8 @@ library(tidyverse)
 
 source("../R/hestia_functions.R")
 
+load("data/bac_viral_sim.Rdata")
+
 inf_process <- make_infection_model(transmit(from = "S", to = "I"),
                                     progress(from = "I", to = "S", gamma = NA))
 
