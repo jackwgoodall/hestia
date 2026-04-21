@@ -5,6 +5,11 @@ library(tidyverse)
 
 source("../R/hestia_functions.R")
 
+inf_process <- make_infection_model(transmit(from = "S", to = "I"),
+                                    progress(from = "I", to = "S", gamma = NA))
+
+obs_process <- make_observation_model(pcr = c("S" = 0.05, "I" = 0.95))
+
 age_season_mod <- run_model(inf_model = inf_process, 
                             obs_model = obs_process, 
                             data = bac_viral_sim, 
