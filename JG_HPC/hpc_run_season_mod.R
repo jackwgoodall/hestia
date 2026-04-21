@@ -1,6 +1,5 @@
 library(cmdstanr)
 library(splines)
-library(mgcv)
 library(tidyverse)
 
 source("../R/hestia_functions.R")
