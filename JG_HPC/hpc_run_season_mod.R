@@ -31,4 +31,4 @@ age_season_mod <- run_model(inf_model = inf_process,
                             backend = "cmdstanr"
 )
 
-save(age_season_mod, file = "data/age_season_mod.Rdata")
+age_season_mod$save_object(file = "age_season_mod.RDS")
