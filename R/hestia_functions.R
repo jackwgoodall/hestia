@@ -416,6 +416,7 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
                    mult_param_index = unlist(mult_info$param),
                    mult_index = mult_info %>% select(mult_row, mult_col),
                    n_params = length(unique(inf_details$trans_to_fit$param[inf_details$trans_to_fit$param != 0])),
+                   n_hh = max(dat$hh_id),
                    hh_size = hh_sum$hh_size,
                    n_obs = nrow(dat),
                    n_obs_type = length(obs_model),
