@@ -288,24 +288,49 @@ get_transmission_details <- function(inf_model) {
 }
 
 #' @title Make Observation Process Model
-#' 
-#' @param ... A series of named vectors. Each vector corresponds to an observation
-#' type. Each entry in the vector is named for the corresponding compartment in
-#' the infection process model. The value is the proability of observing a positive
-#' observation given the individual is in the compartment.
-#' 
+#'
+#' @description
+#' Specifies Beta distribution priors on the probability of a positive
+#' observation for each test type and compartment combination. Used with
+#' \code{hmm_tv_cov_reduce_sum_obs_prior.stan}, which estimates these
+#' probabilities rather than treating them as fixed.
+#'
+#' @param ... A series of named lists. Each list corresponds to an observation
+#'   type (e.g. \code{pcr}, \code{igg}). Each element of the list is named for
+#'   a compartment and holds a length-2 numeric vector \code{c(alpha, beta)}
+#'   giving the Beta prior hyperparameters for
+#'   P(positive observation | that compartment).
+#'   The prior mean is \code{alpha / (alpha + beta)}.
+#'
+#' @return A named list, one element per observation type. Each element is
+#'   itself a list with named numeric vectors \code{alpha} and \code{beta}
+#'   (compartment names preserved).
+#'
+#' @examples
+#' make_observation_model(
+#'   pcr = list("S" = c(1, 19), "I" = c(19, 1), "R" = c(1, 19)),
+#'   igg = list("S" = c(1, 99), "I" = c(1, 99), "R" = c(16, 4))
+#' )
+#'
 #' @export
 make_observation_model <- function(...) {
   .dots <- list(...)
 
   ops <- list()
-  for(i in 1:length(.dots)) {
-    op <- matrix(nrow = 2, ncol = length(.dots[[i]]))
-    op[1,] <- 1-.dots[[i]]
-    op[2,] <- .dots[[i]]
-    rownames(op) <- c("neg_obs", "pos_obs")
-    colnames(op) <- names(.dots[[i]])
-    ops[[i]] <- op
+  for (i in seq_along(.dots)) {
+    test_priors <- .dots[[i]]
+    if (!is.list(test_priors)) {
+      stop(
+        "Each observation type must be a named list of c(alpha, beta) vectors. ",
+        "Got a non-list for '", names(.dots)[i], "'. ",
+        "Example: list(S = c(1, 19), I = c(19, 1))"
+      )
+    }
+    alpha_vec <- sapply(test_priors, `[`, 1)
+    beta_vec  <- sapply(test_priors, `[`, 2)
+    names(alpha_vec) <- names(test_priors)
+    names(beta_vec)  <- names(test_priors)
+    ops[[i]] <- list(alpha = alpha_vec, beta = beta_vec)
   }
   names(ops) <- names(.dots)
   return(ops)
@@ -349,9 +374,12 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
     }
   }
 
-  obs_array <- array(dim = c(length(obs_model),2, length(inf_details$states)))
-  for(i in 1:length(obs_model)) {
-    obs_array[i,,] <- obs_process[[i]]
+  obs_prob_alpha <- matrix(nrow = length(obs_model), ncol = length(inf_details$states))
+  obs_prob_beta  <- matrix(nrow = length(obs_model), ncol = length(inf_details$states))
+  for (i in seq_along(obs_model)) {
+    sn <- inf_details$states
+    obs_prob_alpha[i, ] <- obs_model[[i]]$alpha[sn]
+    obs_prob_beta[i, ]  <- obs_model[[i]]$beta[sn]
   }
 
   # Expand multipliers if needed
@@ -401,7 +429,8 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
                    hh_end_ind = hh_sum$hh_end_ind,
                    hh_tmin = hh_sum$hh_tmin,
                    hh_tmax = hh_sum$hh_tmax,
-                   obs_prob = obs_array,
+                   obs_prob_alpha = obs_prob_alpha,
+                   obs_prob_beta  = obs_prob_beta,
                    init_probs = init_probs, #TODO: Toggle to fit
                    epsilon = epsilon,
                    n_inf_prob = ifelse(inf_details$mult_inf_probs, length(inf_details$inf_states), 1))

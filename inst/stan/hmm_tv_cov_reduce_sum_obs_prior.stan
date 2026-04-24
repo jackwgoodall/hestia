@@ -385,8 +385,13 @@ data {
   array[T_global] matrix[sum(hh_size), k_ih] x_ih;
   array[T_global] matrix[sum(hh_size), k_eh] x_eh;
 
-  // ---- Observation model and initialisation ----
-  array[n_obs_type] matrix[n_unique_obs, n_states] obs_prob;
+  // ---- Observation model priors (Beta hyperparameters) ----
+  // obs_prob_alpha[k, s] and obs_prob_beta[k, s] are the alpha and beta
+  // parameters of the Beta prior on P(positive obs | test k, state s).
+  array[n_obs_type, n_states] real<lower=0> obs_prob_alpha;
+  array[n_obs_type, n_states] real<lower=0> obs_prob_beta;
+
+  // ---- Initialisation ----
   vector[n_states] init_probs;
   real epsilon;
   int n_inf_prob;
@@ -400,17 +405,24 @@ parameters {
   vector[k_ih] beta_ih;
   real beta0_eh;
   array[n_inf_prob] real beta0_ih;
+
+  // Observation probabilities: P(positive | test k, state s).
+  // Estimated with Beta(obs_prob_alpha[k,s], obs_prob_beta[k,s]) priors.
+  array[n_obs_type, n_states] real<lower=0, upper=1> obs_params;
 }
 
 transformed parameters {
 
   // Pre-compute person- and time-varying infection probabilities.
-  // These are computed once per iteration and passed to every thread,
-  // avoiding redundant computation inside the parallel function.
   array[n_inf_prob] matrix[sum(hh_size), T_global] ih_prob;
   matrix[sum(hh_size), T_global] eh_prob;
   array[n_params] real params;
   array[n_mult_params] real mult_params;
+
+  // Build the obs_prob array from estimated obs_params.
+  // obs_prob[k][1, s] = P(negative | test k, state s) = 1 - obs_params[k, s]
+  // obs_prob[k][2, s] = P(positive | test k, state s) =     obs_params[k, s]
+  array[n_obs_type] matrix[n_unique_obs, n_states] obs_prob;
 
   params      = inv_logit(logit_params);
   mult_params = inv_logit(logit_mult_params);
@@ -422,22 +434,33 @@ transformed parameters {
     eh_prob[, tt] = inv_logit(beta0_eh + x_eh[tt] * beta_eh);
   }
 
+  for (k in 1:n_obs_type) {
+    for (s in 1:n_states) {
+      obs_prob[k][1, s] = 1 - obs_params[k, s];
+      obs_prob[k][2, s] =     obs_params[k, s];
+    }
+  }
+
 }
 
 model {
 
-  // Weakly informative priors (unchanged).
+  // Weakly informative priors on covariate coefficients.
   beta_eh ~ normal(-3, 3);
   beta_ih ~ normal(-3, 3);
 
+  // Beta priors on observation probabilities.
+  for (k in 1:n_obs_type) {
+    for (s in 1:n_states) {
+      obs_params[k, s] ~ beta(obs_prob_alpha[k, s], obs_prob_beta[k, s]);
+    }
+  }
+
   // Integer array to slice over households.
-  // reduce_sum will split this across threads automatically.
   array[n_hh] int hh_indices;
   for (h in 1:n_hh) hh_indices[h] = h;
 
   // Parallelised forward algorithm.
-  // grainsize = 1 lets Stan choose optimal chunk sizes automatically.
-  // Increase (e.g. to 5) if you observe high thread-management overhead.
   target += reduce_sum(
     partial_log_lik,
     hh_indices,
@@ -470,10 +493,8 @@ generated quantities {
   for (h in 1:n_hh) hh_indices[h] = h;
 
   for (h in 1:n_hh) {
-    // Reuse partial_log_lik with a single-household slice
     llik_final[h] = partial_log_lik(
       hh_indices[h:h], h, h,
-      // ---- shared data ---- (identical to model block call)
       n_states, n_inf_states, inf_states,
       n_trans_fit, param_index, trans_index, source_states,
       trans, transition_multiplier,
@@ -486,7 +507,6 @@ generated quantities {
       T_global,
       ih_prob, eh_prob,
       obs_prob, init_probs, epsilon, n_inf_prob,
-      // ---- fitted parameters ----
       params, mult_params
     );
   }

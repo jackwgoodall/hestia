@@ -9,12 +9,13 @@ load("data/bac_viral_sim.Rdata")
 inf_process <- make_infection_model(transmit(from = "S", to = "I"),
                                     progress(from = "I", to = "S", gamma = NA))
 
-obs_process <- make_observation_model(pcr = c("S" = 0.05, "I" = 0.95))
+obs_process_beta <- make_observation_model(
+  pcr = list("S" = c(1, 19), "I" = c(19, 1)))
 
-age_season_mod <- run_model(inf_model = inf_process, 
-                            obs_model = obs_process, 
+age_season_mod2 <- run_model(inf_model = inf_process, 
+                            obs_model = obs_process_beta, 
                             data = bac_viral_sim, 
-                            file = file.path("..", "inst", "stan", "hmm_tv_cov_reduce_sum.stan"),
+                            file = file.path("..", "inst", "stan", "hmm_tv_cov_reduce_sum_obs_prior.stan"),
                             init_probs = c(0.7, 
                                            0.3),
                             ih_cov = x_ih_all,   # 3D array [T, N, k]
@@ -22,7 +23,7 @@ age_season_mod <- run_model(inf_model = inf_process,
                             save_chains = FALSE,
                             save_states = FALSE,
                             time_varying = TRUE,
-                            iter         = 500,
+                            iter         = 1000,
                             chains            = 4,
                             parallel_chains   = 4,
                             threads_per_chain = 13,    
@@ -31,4 +32,4 @@ age_season_mod <- run_model(inf_model = inf_process,
                             backend = "cmdstanr"
 )
 
-age_season_mod$save_object(file = "age_season_mod.RDS", compress = "xz")
+age_season_mod2$save_object(file = "data/age_season_mod2.RDS", compress = "xz")
