@@ -32,4 +32,6 @@ age_season_mod2 <- run_model(inf_model = inf_process,
                             backend = "cmdstanr"
 )
 
-age_season_mod2$save_object(file = "data/age_season_mod2.RDS", compress = "xz")
+age_season_mod2$save_object(file = "data/age_season_mod2.RDS")
+
+age_season_mod2$save_object(file = "data/age_season_mod2_comp.RDS", compress = "xz")
