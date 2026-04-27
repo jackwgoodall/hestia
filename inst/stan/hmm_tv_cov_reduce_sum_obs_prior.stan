@@ -306,8 +306,11 @@ functions {
 
             trans_temp = trans_temp .* mult_temp;
 
+            // Fill diagonals.  Guard against negative diagonals (possible
+            // during warmup if the off-diagonal sums temporarily exceed 1).
             for (i in 1:cols(trans_temp)) {
-              trans_temp[i, i] = get_diagonal_element(trans_temp, i);
+              real d = get_diagonal_element(trans_temp, i);
+              trans_temp[i, i] = d > 0 ? d : epsilon;
             }
 
             trans_temp = replace_zeroes(trans_temp, epsilon);
@@ -391,6 +394,13 @@ data {
   array[n_obs_type, n_states] real<lower=0> obs_prob_alpha;
   array[n_obs_type, n_states] real<lower=0> obs_prob_beta;
 
+  // ---- Bounds on obs_params, used to break label-switching symmetry ----
+  // For "negative" states (test should be negative)  set [0,   0.5]
+  // For "positive" states (test should be positive)  set [0.5, 1  ]
+  // The R helper derives these automatically from the prior mean.
+  array[n_obs_type, n_states] real<lower=0, upper=1> obs_lb;
+  array[n_obs_type, n_states] real<lower=0, upper=1> obs_ub;
+
   // ---- Initialisation ----
   vector[n_states] init_probs;
   real epsilon;
@@ -406,9 +416,12 @@ parameters {
   real beta0_eh;
   array[n_inf_prob] real beta0_ih;
 
-  // Observation probabilities: P(positive | test k, state s).
-  // Estimated with Beta(obs_prob_alpha[k,s], obs_prob_beta[k,s]) priors.
-  array[n_obs_type, n_states] real<lower=0, upper=1> obs_params;
+  // Re-parameterised observation probabilities on [0,1].  The actual
+  // probability obs_params is built in transformed parameters by linear
+  // scaling to [obs_lb, obs_ub].  This breaks label-switching symmetry by
+  // hard-bounding each (test, state) probability above or below 0.5
+  // according to the prior mean.
+  array[n_obs_type, n_states] real<lower=0, upper=1> obs_raw;
 }
 
 transformed parameters {
@@ -418,6 +431,9 @@ transformed parameters {
   matrix[sum(hh_size), T_global] eh_prob;
   array[n_params] real params;
   array[n_mult_params] real mult_params;
+
+  // Linearly rescale obs_raw ∈ [0,1] to obs_params ∈ [obs_lb, obs_ub].
+  array[n_obs_type, n_states] real<lower=0, upper=1> obs_params;
 
   // Build the obs_prob array from estimated obs_params.
   // obs_prob[k][1, s] = P(negative | test k, state s) = 1 - obs_params[k, s]
@@ -436,6 +452,8 @@ transformed parameters {
 
   for (k in 1:n_obs_type) {
     for (s in 1:n_states) {
+      obs_params[k, s] = obs_lb[k, s]
+                       + (obs_ub[k, s] - obs_lb[k, s]) * obs_raw[k, s];
       obs_prob[k][1, s] = 1 - obs_params[k, s];
       obs_prob[k][2, s] =     obs_params[k, s];
     }
@@ -449,10 +467,15 @@ model {
   beta_eh ~ normal(-3, 3);
   beta_ih ~ normal(-3, 3);
 
-  // Beta priors on observation probabilities.
+  // Beta priors on observation probabilities.  Priors are placed on
+  // obs_params (the actual probability scale).  The change-of-variables
+  // Jacobian from obs_raw → obs_params is constant in the parameters and
+  // is therefore omitted; using target += beta_lpdf(...) suppresses Stan's
+  // warning about sampling statements applied to transformed quantities.
   for (k in 1:n_obs_type) {
     for (s in 1:n_states) {
-      obs_params[k, s] ~ beta(obs_prob_alpha[k, s], obs_prob_beta[k, s]);
+      target += beta_lpdf(obs_params[k, s] | obs_prob_alpha[k, s],
+                                              obs_prob_beta[k, s]);
     }
   }
 

@@ -330,7 +330,18 @@ make_observation_model <- function(...) {
     beta_vec  <- sapply(test_priors, `[`, 2)
     names(alpha_vec) <- names(test_priors)
     names(beta_vec)  <- names(test_priors)
-    ops[[i]] <- list(alpha = alpha_vec, beta = beta_vec)
+
+    # Derive per-state bounds from the prior mean to break HMM
+    # label-switching symmetry.  Mean >= 0.5 (positive state) → [0.5, 1];
+    # otherwise (negative state) → [0, 0.5].
+    mean_vec <- alpha_vec / (alpha_vec + beta_vec)
+    lb_vec   <- ifelse(mean_vec >= 0.5, 0.5, 0)
+    ub_vec   <- ifelse(mean_vec >= 0.5, 1,   0.5)
+    names(lb_vec) <- names(test_priors)
+    names(ub_vec) <- names(test_priors)
+
+    ops[[i]] <- list(alpha = alpha_vec, beta = beta_vec,
+                     lb = lb_vec, ub = ub_vec)
   }
   names(ops) <- names(.dots)
   return(ops)
@@ -376,10 +387,14 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
 
   obs_prob_alpha <- matrix(nrow = length(obs_model), ncol = length(inf_details$states))
   obs_prob_beta  <- matrix(nrow = length(obs_model), ncol = length(inf_details$states))
+  obs_lb         <- matrix(nrow = length(obs_model), ncol = length(inf_details$states))
+  obs_ub         <- matrix(nrow = length(obs_model), ncol = length(inf_details$states))
   for (i in seq_along(obs_model)) {
     sn <- inf_details$states
     obs_prob_alpha[i, ] <- obs_model[[i]]$alpha[sn]
     obs_prob_beta[i, ]  <- obs_model[[i]]$beta[sn]
+    obs_lb[i, ]         <- obs_model[[i]]$lb[sn]
+    obs_ub[i, ]         <- obs_model[[i]]$ub[sn]
   }
 
   # Expand multipliers if needed
@@ -431,6 +446,8 @@ make_stan_data <- function(inf_model, obs_model, data, init_probs, epsilon = 1e-
                    hh_tmax = hh_sum$hh_tmax,
                    obs_prob_alpha = obs_prob_alpha,
                    obs_prob_beta  = obs_prob_beta,
+                   obs_lb         = obs_lb,
+                   obs_ub         = obs_ub,
                    init_probs = init_probs, #TODO: Toggle to fit
                    epsilon = epsilon,
                    n_inf_prob = ifelse(inf_details$mult_inf_probs, length(inf_details$inf_states), 1))
