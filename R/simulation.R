@@ -455,8 +455,8 @@ sim_sis <- function(eh_prob = 0.05,                  # Extra-household risk of i
                     season_type = c("fourier", "spline"),
                     season_k = 0,                    # number of Fourier harmonics
                     season_period = 365,             # period in days
-                    season_df = 6,                   # spline basis dimension (mgcv::s k)
-                    season_knots = NULL,             # optional knots list for mgcv::s (e.g., list(day = c(0.5, 365.5)))
+                    season_df = 6,                   # spline basis dimension (splines::ns df)
+                    season_knots = NULL,             # optional internal knot positions for splines::ns (numeric vector, e.g. c(91, 182, 273))
                     season_coefs_eh = NULL,          # length 2*season_k (sin1, cos1, sin2, cos2, ...)
                     season_coefs_ih = NULL) {        # length 2*season_k (sin1, cos1, sin2, cos2, ...)
   
@@ -492,34 +492,32 @@ sim_sis <- function(eh_prob = 0.05,                  # Extra-household risk of i
   }
 
   if (season_type == "spline") {
-    day_seq <- seq_len(season_period)
-    knots <- season_knots
-    if (is.null(knots)) {
-      knots <- list(day = c(0.5, season_period + 0.5))
+    # Spline basis spans the full simulation horizon (1..tmax); season_period
+    # is ignored for season_type = "spline" (it remains relevant only for
+    # the "fourier" branch).
+    day_seq <- seq_len(tmax)
+    season_basis <- if (is.null(season_knots)) {
+      splines::ns(day_seq, df = season_df)
+    } else {
+      splines::ns(day_seq, knots = season_knots)
     }
-    smooth <- mgcv::smoothCon(
-      mgcv::s(day, bs = "cc", k = season_df),
-      data = data.frame(day = day_seq),
-      knots = knots,
-      absorb.cons = TRUE
-    )
-    season_basis <- smooth[[1]]$X
-    if (!is.matrix(season_basis)) season_basis <- as.matrix(season_basis)
+    season_basis <- unname(as.matrix(season_basis))
     n_basis <- ncol(season_basis)
 
     if (is.null(season_coefs_eh)) season_coefs_eh <- rep(0, n_basis)
     if (is.null(season_coefs_ih)) season_coefs_ih <- rep(0, n_basis)
     if (length(season_coefs_eh) != n_basis) {
-      stop("season_coefs_eh must have length n_basis (from mgcv spline basis).")
+      stop("season_coefs_eh must have length equal to the spline basis dimension.")
     }
     if (length(season_coefs_ih) != n_basis) {
-      stop("season_coefs_ih must have length n_basis (from mgcv spline basis).")
+      stop("season_coefs_ih must have length equal to the spline basis dimension.")
     }
 
+    # `period` is ignored in the spline branch — the basis is indexed by
+    # the simulation day directly (1..tmax), with no cyclic wrapping.
     season_effect <- function(d, coefs, period) {
       if (is.null(coefs) || length(coefs) == 0) return(0)
-      doy <- ((d - 1) %% period) + 1
-      sum(season_basis[doy, ] * coefs)
+      sum(season_basis[d, ] * coefs)
     }
   }
   
@@ -883,26 +881,26 @@ sim_sirs <- function(eh_prob = 0.05,
       if (length(season_coefs_ih) != 2 * season_k) stop("season_coefs_ih must have length 2*season_k.")
     }
   } else {
-    day_seq <- seq_len(season_period)
-    knots <- season_knots
-    if (is.null(knots)) knots <- list(day = c(0.5, season_period + 0.5))
-    smooth <- mgcv::smoothCon(
-      mgcv::s(day, bs = "cc", k = season_df),
-      data = data.frame(day = day_seq),
-      knots = knots,
-      absorb.cons = TRUE
-    )
-    season_basis <- smooth[[1]]$X
-    if (!is.matrix(season_basis)) season_basis <- as.matrix(season_basis)
+    # Spline basis spans the full simulation horizon (1..tmax); season_period
+    # is ignored for season_type = "spline" (it remains relevant only for
+    # the "fourier" branch).
+    day_seq <- seq_len(tmax)
+    season_basis <- if (is.null(season_knots)) {
+      splines::ns(day_seq, df = season_df)
+    } else {
+      splines::ns(day_seq, knots = season_knots)
+    }
+    season_basis <- unname(as.matrix(season_basis))
     n_basis <- ncol(season_basis)
     if (is.null(season_coefs_eh)) season_coefs_eh <- rep(0, n_basis)
     if (is.null(season_coefs_ih)) season_coefs_ih <- rep(0, n_basis)
     if (length(season_coefs_eh) != n_basis) stop("season_coefs_eh must match spline basis dimension.")
     if (length(season_coefs_ih) != n_basis) stop("season_coefs_ih must match spline basis dimension.")
+    # `period` is ignored in the spline branch — the basis is indexed by
+    # the simulation day directly (1..tmax), with no cyclic wrapping.
     season_effect <- function(d, coefs, period) {
       if (is.null(coefs) || length(coefs) == 0) return(0)
-      doy <- ((d - 1) %% period) + 1
-      sum(season_basis[doy, ] * coefs)
+      sum(season_basis[d, ] * coefs)
     }
   }
 
@@ -1228,27 +1226,27 @@ sim_sis_from_existing <- function(base_complete_obs,
       if (length(season_coefs_ih) != 2 * season_k) stop("season_coefs_ih must have length 2*season_k.")
     }
   } else {
-    day_seq <- seq_len(season_period)
-    knots <- season_knots
-    if (is.null(knots)) knots <- list(day = c(0.5, season_period + 0.5))
-    smooth <- mgcv::smoothCon(
-      mgcv::s(day, bs = "cc", k = season_df),
-      data = data.frame(day = day_seq),
-      knots = knots,
-      absorb.cons = TRUE
-    )
-    season_basis <- smooth[[1]]$X
-    if (!is.matrix(season_basis)) season_basis <- as.matrix(season_basis)
+    # Spline basis spans the full simulation horizon (1..tmax); season_period
+    # is ignored for season_type = "spline" (it remains relevant only for
+    # the "fourier" branch).
+    day_seq <- seq_len(tmax)
+    season_basis <- if (is.null(season_knots)) {
+      splines::ns(day_seq, df = season_df)
+    } else {
+      splines::ns(day_seq, knots = season_knots)
+    }
+    season_basis <- unname(as.matrix(season_basis))
     n_basis <- ncol(season_basis)
     if (is.null(season_coefs_eh)) season_coefs_eh <- rep(0, n_basis)
     if (is.null(season_coefs_ih)) season_coefs_ih <- rep(0, n_basis)
     if (length(season_coefs_eh) != n_basis || length(season_coefs_ih) != n_basis) {
       stop("season coefs must match spline basis dimension.")
     }
+    # `period` is ignored in the spline branch — the basis is indexed by
+    # the simulation day directly (1..tmax), with no cyclic wrapping.
     season_effect <- function(d, coefs, period) {
       if (is.null(coefs) || length(coefs) == 0) return(0)
-      doy <- ((d - 1) %% period) + 1
-      sum(season_basis[doy, ] * coefs)
+      sum(season_basis[d, ] * coefs)
     }
   }
 

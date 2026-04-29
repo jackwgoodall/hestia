@@ -54,11 +54,11 @@
 #'   ),
 #'   bac_pcr = list(
 #'     Sv_Sb = c(1, 99),   # FPR ~ 0.01
-#'     Sv_Ib = c(5, 95),   # low sensitivity (sub-detection carriage)
+#'     Sv_Ib = c(95, 5),   # TPR ~ 0.95
 #'     Iv_Sb = c(1, 99),
-#'     Iv_Ib = c(19, 1),   # high sensitivity (viral boosting above threshold)
+#'     Iv_Ib = c(95, 5),   
 #'     Rv_Sb = c(1, 99),
-#'     Rv_Ib = c(5, 95)    # low sensitivity (carriage, viral resolved)
+#'     Rv_Ib = c(95, 5)    
 #'   )
 #' )
 #' }
@@ -147,7 +147,7 @@ make_joint_obs_model <- function(...) {
 #'   observation type in the same order as \code{obs_model$test_names}.
 #'   Observations must be binary, coded as 0 (negative) or 1 (positive); use
 #'   \code{NA} for missing. The Stan model assumes binary tests
-#'   (\code{n_unique_obs = 2}); multi-level outcomes are not supported.
+#'   (\code{n_unique_obs = 2}).
 #'   \code{t} is the global day index used to look up time-varying
 #'   covariates; it is automatically converted to a per-household relative
 #'   index for the HMM forward step.
@@ -345,7 +345,7 @@ run_joint_model <- function(obs_model,
     epsilon    = epsilon
   )
 
-  # Coerce any data frames to matrices (cmdstanr is strict)
+  # Coerce any data frames to matrices (cmdstanr is strict it turns out....)
   dat_stan <- lapply(dat_stan, function(x) if (is.data.frame(x)) as.matrix(x) else x)
 
   # Default initialisations centred on plausible values

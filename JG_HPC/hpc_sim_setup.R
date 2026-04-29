@@ -1,5 +1,4 @@
 library(splines)
-library(mgcv)
 library(dplyr)
 source("../R/simulation.R")
 
@@ -18,7 +17,7 @@ viral_base <- sim_sirs(eh_prob = 0.02,
                        ih_prob = 0.03, 
                        n_hh = 52,
                        hh_size = 5:12, 
-                       tmax = 480, 
+                       tmax = 430, 
                        rho = 1/10,
                        gamma = 1/6,
                        covs_eh = NULL, 
@@ -32,14 +31,14 @@ viral_base <- sim_sirs(eh_prob = 0.02,
                        season_type = "spline",
                        season_k = NULL,                    # number of Fourier harmonics
                        season_period = 365,             # period in days
-                       season_df = 6,                   # spline basis dimension (mgcv::s k)
-                       season_knots = list(day = c(0.5, 365.5)),             # optional knots list for mgcv::s (e.g., list(day = c(0.5, 365.5)))
+                       season_df = 4,                   # spline basis dimension (mgcv::s k)
                        season_coefs_eh = c(0.101632014,  
                                            -0.003037513, 
                                            0.390994253, 
                                            -0.230518142),          # length 2*season_k (sin1, cos1, sin2, cos2, ...)
                        season_coefs_ih = NULL)
 
+# plot_sim(viral_base$complete_obs, viral_base$x)
 
 age_spec <- list(
   name = "age",
@@ -71,12 +70,17 @@ bacterial_base <- sim_sis_from_existing(
   cross_ih_trans_coef = 0.3,
   season_type = "spline",
   season_k = NULL,                
-  season_period = 365,             # period in days
-  season_df = 6,                   # spline basis dimension (mgcv::s k)
-  season_knots = list(day = c(0.5, 365.5)),             # optional knots list for mgcv::s (e.g., list(day = c(0.5, 365.5)))
-  season_coefs_eh = c(0.1578415,  0.1509227, -1.1588201, -0.7021107),          # length 2*season_k (sin1, cos1, sin2, cos2, ...)
+  season_period = NULL,            
+  season_df = 6,                   
+  season_knots = c(125, 211, 296, 349),             
+  season_coefs_eh = c(-2.0589174, 0.7798747, -0.1790857, -0.8035356, 1.0044010),
   season_coefs_ih = NULL
 )
+
+#plot_sim(bacterial_base$complete_obs, 
+    #     simulation_name = "Bacterial Base",
+    #        bacterial_base$x,
+    #      folder_location = "JG_HPC/plots")
 
 ## Make array
 
@@ -86,9 +90,8 @@ bac_viral_sim <- bacterial_base$obs %>%
 
 bacterial_base_covs <- bacterial_base$x[,2:4]
 
-spline_basis <- splines::ns(1:max(bac_viral_sim$t), df = 5)
-spline_basis <- as.matrix(spline_basis)
-
+spline_basis <- as.matrix(splines::ns(1:max(bac_viral_sim$t), df = 6, knots = c(125, 211, 296, 349)))
+                          
 x_eh_splines <- array(dim = c(max(bac_viral_sim$t), nrow(bacterial_base_covs), ncol(spline_basis)))
 
 
@@ -112,4 +115,13 @@ for(n in 1:max(bac_viral_sim$t)) {
 }
 
 
+## Make joint data for joint model
+
+combined_data <- viral_base$obs %>%
+  select(hh_id, part_id, t, viral_pcr = y1) %>%
+  left_join(bacterial_base$obs %>% select(hh_id, part_id, t, bacterial_pcr = y1)) %>%
+  mutate(bacterial_pcr = if_else(t %in% c(seq(7,700,7)), bacterial_pcr, NA),
+         viral_pcr = if_else(t %in% c(seq(7,700,7)), viral_pcr, NA))
+
 save(bac_viral_sim, bacterial_base_covs, x_eh_splines_all, x_ih_all, file = "data/bac_viral_sim.Rdata")
+ 

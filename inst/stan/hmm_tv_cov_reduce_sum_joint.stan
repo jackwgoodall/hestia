@@ -1,5 +1,5 @@
 // =============================================================================
-// Joint SIRS-SIS Hidden Markov Model with reduce_sum parallelisation
+// Joint SIRS-SIS Hidden Markov Model (now with reduce_sum parallelisation)
 //
 // Joint state space (6 states):
 //   1: (S_v, S_b)   Viral susceptible,  Bacterial susceptible
