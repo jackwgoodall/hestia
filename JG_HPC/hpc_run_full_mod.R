@@ -6,9 +6,6 @@ source("../R/joint_model_functions.R")
 
 load("data/bac_viral_sim.Rdata")
 
-inf_process <- make_infection_model(transmit(from = "S", to = "I"),
-                                    progress(from = "I", to = "S", gamma = NA))
-
 obs_joint <- make_joint_obs_model(
    viral_pcr = list(
        Sv_Sb = c(1, 99),   # FPR ~ 0.01
