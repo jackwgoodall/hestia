@@ -28,26 +28,30 @@ obs_joint <- make_joint_obs_model(
      )
    )
 
-age_season_mod2 <- run_model(inf_model = inf_process, 
-                             obs_model = obs_process_beta, 
-                             data = bac_viral_sim, 
-                             file = file.path("..", "inst", "stan", "hmm_tv_cov_reduce_sum_obs_prior.stan"),
-                             init_probs = c(0.7, 
-                                            0.3),
-                             ih_cov = x_ih_all,   # 3D array [T, N, k]
-                             eh_cov = x_eh_splines_all,   # 3D array [T, N, k]
-                             save_chains = FALSE,
-                             save_states = FALSE,
-                             time_varying = TRUE,
-                             iter         = 1000,
-                             chains            = 4,
-                             parallel_chains   = 4,
-                             threads_per_chain = 13,    
-                             adapt_delta       = 0.9,
-                             max_treedepth     = 12,
-                             backend = "cmdstanr"
+full_model_data <- make_joint_stan_data(obs_model = obs_joint,
+                                        data = combined_data,
+                                        obs_cols = c("viral_pcr", "bacterial_pcr"),
+                                        init_probs = c(90, 5, 1, 1, 1, 2),
+                                        ih_cov = x_ih_all,
+                                        eh_cov = x_eh_splines_all
+   
 )
 
-age_season_mod2$save_object(file = "data/age_season_mod2.RDS")
+first_full_mod <- run_joint_model(obs_model = obs_joint,
+                data = combined_data,
+                obs_cols = c("viral_pcr", "bacterial_pcr"),
+                init_probs = c(90, 5, 1, 1, 1, 2),
+                ih_cov = x_ih_all,
+                eh_cov = x_eh_splines_all,
+                                    file = file.path("..", "inst", "stan", "hmm_tv_cov_reduce_sum_joint.stan"),
+                                    iter         = 1000,
+                                    chains            = 4,
+                                    parallel_chains   = 4,
+                                    threads_per_chain = 13,    
+                                    adapt_delta       = 0.9,
+                                    max_treedepth     = 12
+)
 
-age_season_mod2$save_object(file = "data/age_season_mod2_comp.RDS", compress = "xz")
+age_season_mod2$save_object(file = "data/first_full_mod.RDS")
+
+age_season_mod2$save_object(file = "data/first_full_mod.RDS", compress = "xz")

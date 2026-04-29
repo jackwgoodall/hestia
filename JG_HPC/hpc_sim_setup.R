@@ -90,10 +90,11 @@ bac_viral_sim <- bacterial_base$obs %>%
 
 bacterial_base_covs <- bacterial_base$x[,2:4]
 
-spline_basis <- as.matrix(splines::ns(1:max(bac_viral_sim$t), df = 6, knots = c(125, 211, 296, 349)))
-                          
-x_eh_splines <- array(dim = c(max(bac_viral_sim$t), nrow(bacterial_base_covs), ncol(spline_basis)))
+spline_basis <- as.matrix(splines::ns(1:max(viral_base$obs$t),
+                                      df = 6, knots = c(125, 211, 296, 349)))
 
+x_eh_splines <- array(dim = c(max(viral_base$obs$t),
+                              nrow(bacterial_base_covs), ncol(spline_basis)))
 
 for(n in 1:max(bac_viral_sim$t)) {
   x_eh_splines[n, , ] <- matrix(rep(spline_basis[n, ], each = nrow(bacterial_base_covs)),
@@ -108,7 +109,8 @@ for(n in 1:max(bac_viral_sim$t)) {
 }
 
 
-x_ih_all <- array(dim = c(max(bac_viral_sim$t), nrow(bacterial_base_covs), ncol(bacterial_base_covs)))
+x_ih_all <- array(dim = c(max(viral_base$obs$t),
+                          nrow(bacterial_base_covs), ncol(bacterial_base_covs)))
 
 for(n in 1:max(bac_viral_sim$t)) {
   x_ih_all[n, , ] <- as.matrix(bacterial_base_covs)
@@ -123,5 +125,5 @@ combined_data <- viral_base$obs %>%
   mutate(bacterial_pcr = if_else(t %in% c(seq(7,700,7)), bacterial_pcr, NA),
          viral_pcr = if_else(t %in% c(seq(7,700,7)), viral_pcr, NA))
 
-save(bac_viral_sim, bacterial_base_covs, x_eh_splines_all, x_ih_all, file = "data/bac_viral_sim.Rdata")
+save(combined_data, bac_viral_sim, bacterial_base_covs, x_eh_splines_all, x_ih_all, file = "data/bac_viral_sim.Rdata")
  
