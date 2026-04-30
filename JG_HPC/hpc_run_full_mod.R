@@ -49,6 +49,6 @@ first_full_mod <- run_joint_model(obs_model = obs_joint,
                                     max_treedepth     = 12
 )
 
-age_season_mod2$save_object(file = "data/first_full_mod.RDS")
+first_full_mod$save_object(file = "data/first_full_mod.RDS")
 
-age_season_mod2$save_object(file = "data/first_full_mod.RDS", compress = "xz")
+first_full_mod$save_object(file = "data/first_full_mod.RDS", compress = "xz")
