@@ -22,9 +22,9 @@
 
 functions {
 
-  // ---------------------------------------------------------------------------
+  // ---------------------
   // Helper: diagonal entry that makes column i sum to 1.
-  // ---------------------------------------------------------------------------
+  // ---------------------
   real get_diagonal_element(matrix m, int i) {
     real out = 1;
     for (j in 1:rows(m)) {
@@ -33,18 +33,18 @@ functions {
     return out;
   }
 
-  // ---------------------------------------------------------------------------
+  // ---------------------
   // Helper: normalise each column of a matrix to sum to 1.
-  // ---------------------------------------------------------------------------
+  // ---------------------
   matrix normalize_cols(matrix m) {
     matrix[rows(m), cols(m)] out;
     for (i in 1:cols(m)) out[, i] = m[, i] / sum(m[, i]);
     return out;
   }
 
-  // ---------------------------------------------------------------------------
+  // ---------------------
   // Helper: replace exact zeros with epsilon (avoids log(0)).
-  // ---------------------------------------------------------------------------
+  // ---------------------
   matrix replace_zeroes(matrix m, real epsilon) {
     matrix[rows(m), cols(m)] out = m;
     for (i in 1:rows(m))
@@ -53,16 +53,17 @@ functions {
     return out;
   }
 
-  // ---------------------------------------------------------------------------
+  // ---------------------
   // Partial log-likelihood for reduce_sum.
   //
   // Runs the HMM forward algorithm for households [start, end] and returns
-  // their summed log-likelihood.  All probability matrices are pre-computed
-  // in transformed parameters to avoid redundant work across threads.
+  // their summed log-likelihood.  All prob matrices are pre-computed
+  // in transformed params.
   //
   // `slice_hh` is required by reduce_sum's signature but is not used inside
   // the function body — the loop indexes households via `start:end` directly.
-  // ---------------------------------------------------------------------------
+  // ---------------------
+  
   real partial_log_lik(
     array[] int slice_hh,
     int start,
@@ -138,9 +139,9 @@ functions {
 
       { // START FORWARD ALGORITHM
 
-        // ------------------------------------------------------------------
+        // ------------
         // Initialisation at the first modelled day
-        // ------------------------------------------------------------------
+        // ------------
         for (i in 1:hh_size[h]) {
 
           array[6] int ref = linspaced_int_array(6, 6*(i-1)+1, 6*i);
@@ -175,11 +176,12 @@ functions {
 
         } // end init participant loop
 
-        // ------------------------------------------------------------------
+        // ------------
         // Forward recursion for t = 2, ..., this household's last day.
         // Note: T_hh is the *global* maximum window (used only for matrix
         // sizing); the loop must stop at this household's own length.
-        // ------------------------------------------------------------------
+        // ------------
+        
         for (tt in 2:(hh_tmax[h] - hh_tmin[h] + 1)) {
 
           int actual_day = hh_tmin[h] + tt - 1;
@@ -208,14 +210,14 @@ functions {
 
             if (obs_switch == 1) index = min(index + 1, obs_per_hh[h]);
 
-            // --------------------------------------------------------------
+            // --------
             // Compute household force of infection for person p
             //
             //  no_vir_inf      — P(p not virally infected by household)
             //  no_bac_inf_base — P(p not bac-infected by household)
             //                    for base susceptibility (p in S_v or R_v)
-            //  no_bac_inf_susc — same but p is virally infected (state 3)
-            // --------------------------------------------------------------
+            //  no_bac_inf_susc — "" but p is virally infected (state 3)
+            // --------
             real no_vir_inf      = 1.0;
             real no_bac_inf_base = 1.0;
             real no_bac_inf_susc = 1.0;
@@ -246,11 +248,11 @@ functions {
               }
             }
 
-            // --------------------------------------------------------------
+            // --------
             // Build transition matrix (columns = source states)
-            // Simultaneous transitions are approximated as zero (valid for
+            // Simultaneous transitions are approximated as zero (??valid for
             // small daily time steps).
-            // --------------------------------------------------------------
+            // ---------
             trans_temp = rep_matrix(0.0, 6, 6);
 
             // Viral infection probability (same for all S_v source states)
@@ -262,27 +264,27 @@ functions {
             // Bacterial infection probability: enhanced susceptibility (state 3)
             real p_bac_susc = 1.0 - no_bac_inf_susc * (1.0 - eh_prob_bac_susc[last_lik + p, actual_day]);
 
-            // Viral acquisition: S_v → I_v
-            trans_temp[3, 1] = p_vir;   // (S_v,S_b) → (I_v,S_b)
-            trans_temp[4, 2] = p_vir;   // (S_v,I_b) → (I_v,I_b)
+            // Viral acquisition: S_v -> I_v
+            trans_temp[3, 1] = p_vir;   // (S_v,S_b) -> (I_v,S_b)
+            trans_temp[4, 2] = p_vir;   // (S_v,I_b) -> (I_v,I_b)
 
-            // Bacterial acquisition: S_b → I_b
-            trans_temp[2, 1] = p_bac_base;  // (S_v,S_b) → (S_v,I_b)
-            trans_temp[4, 3] = p_bac_susc;  // (I_v,S_b) → (I_v,I_b)  [enhanced]
-            trans_temp[6, 5] = p_bac_base;  // (R_v,S_b) → (R_v,I_b)
+            // Bacterial acquisition: S_b -> I_b
+            trans_temp[2, 1] = p_bac_base;  // (S_v,S_b) -> (S_v,I_b)
+            trans_temp[4, 3] = p_bac_susc;  // (I_v,S_b) -> (I_v,I_b)  [i.e. enhanced]
+            trans_temp[6, 5] = p_bac_base;  // (R_v,S_b) -> (R_v,I_b)
 
-            // Bacterial recovery: I_b → S_b
-            trans_temp[1, 2] = gamma_b;   // (S_v,I_b) → (S_v,S_b)
-            trans_temp[3, 4] = gamma_b;   // (I_v,I_b) → (I_v,S_b)
-            trans_temp[5, 6] = gamma_b;   // (R_v,I_b) → (R_v,S_b)
+            // Bacterial recovery: I_b -> S_b
+            trans_temp[1, 2] = gamma_b;   // (S_v,I_b) -> (S_v,S_b)
+            trans_temp[3, 4] = gamma_b;   // (I_v,I_b) -> (I_v,S_b)
+            trans_temp[5, 6] = gamma_b;   // (R_v,I_b) -> (R_v,S_b)
 
-            // Viral recovery: I_v → R_v
-            trans_temp[5, 3] = gamma_v;   // (I_v,S_b) → (R_v,S_b)
-            trans_temp[6, 4] = gamma_v;   // (I_v,I_b) → (R_v,I_b)
+            // Viral recovery: I_v -> R_v
+            trans_temp[5, 3] = gamma_v;   // (I_v,S_b) -> (R_v,S_b)
+            trans_temp[6, 4] = gamma_v;   // (I_v,I_b) -> (R_v,I_b)
 
-            // Viral waning immunity: R_v → S_v
-            trans_temp[1, 5] = rho;       // (R_v,S_b) → (S_v,S_b)
-            trans_temp[2, 6] = rho;       // (R_v,I_b) → (S_v,I_b)
+            // Viral waning immunity: R_v -> S_v
+            trans_temp[1, 5] = rho;       // (R_v,S_b) -> (S_v,S_b)
+            trans_temp[2, 6] = rho;       // (R_v,I_b) -> (S_v,I_b)
 
             // Fill diagonal so each column sums to 1.  Guard against
             // negative diagonals (possible during warmup if the sum of
@@ -315,7 +317,7 @@ functions {
     return llik_sum;
   }
 
-} // end functions block
+} 
 
 
 // =============================================================================
@@ -385,14 +387,14 @@ parameters {
 
   // ---- Cross-immunity ----
   // Logit-scale additive effects on bacterial transmission/susceptibility.
-  real cross_ih_trans;   // co-infected transmitter → ↑ bacterial transmissibility
-  real cross_ih_susc;    // I_v recipient → ↑ bacterial susceptibility (IH + EH)
+  real cross_ih_trans;   // co-infected transmitter -> ↑ bacterial transmissibility
+  real cross_ih_susc;    // I_v recipient -> ↑ bacterial susceptibility (IH + EH)
 
   // ---- Observation model ----
   // Re-parameterised on [0,1]; the actual probability obs_params is
   // obtained in transformed parameters by linear scaling to [obs_lb, obs_ub].
-  // This breaks label-switching symmetry by hard-bounding each (test, state)
-  // probability above or below 0.5 according to the prior mean.
+  // This (I think) breaks label-switching symmetry by hard-bounding each (test, state)
+  // probability above or below 0.5 according to the prior's mean.
   array[n_obs_type, 6] real<lower=0, upper=1> obs_raw;
 
 }
@@ -428,7 +430,7 @@ transformed parameters {
     eh_prob_bac_susc[, tt]  = inv_logit(beta0_eh_bac + x_eh[tt] * beta_eh_bac + cross_ih_susc);
   }
 
-  // Linearly rescale obs_raw ∈ [0,1] to obs_params ∈ [obs_lb, obs_ub].
+  // Linearly rescale obs_raw E [0,1] to obs_params E [obs_lb, obs_ub].
   array[n_obs_type, 6] real<lower=0, upper=1> obs_params;
   for (k in 1:n_obs_type) {
     for (s in 1:6) {
@@ -442,8 +444,8 @@ transformed parameters {
   array[n_obs_type] matrix[n_unique_obs, 6] obs_prob;
   for (k in 1:n_obs_type) {
     for (s in 1:6) {
-      obs_prob[k][1, s] = 1 - obs_params[k, s];
-      obs_prob[k][2, s] = obs_params[k, s];
+      obs_prob[k][1, s] = 1 - obs_params[k, s];      // P(negative test k | state s)
+      obs_prob[k][2, s] = obs_params[k, s];         // P(positive test k | state s)
     }
   }
 
@@ -456,9 +458,9 @@ model {
   // ---- Priors ----
 
   // Rates: centred on plausible daily probabilities
-  logit_gamma_v ~ normal(-2, 1);   // prior mean gamma_v ≈ 0.12
-  logit_gamma_b ~ normal(-2, 1);   // prior mean gamma_b ≈ 0.12
-  logit_rho     ~ normal(-3, 1);   // prior mean rho     ≈ 0.05
+  logit_gamma_v ~ normal(-2, 1);   // prior mean gamma_v ~= 0.12
+  logit_gamma_b ~ normal(-2, 1);   // prior mean gamma_b ~= 0.12
+  logit_rho     ~ normal(-3, 1);   // prior mean rho     ~= 0.05
 
   // Baseline IH/EH probabilities: weakly informative on logit scale
   beta0_ih_vir ~ normal(-4, 2);
@@ -472,16 +474,15 @@ model {
   beta_eh_vir ~ normal(0, 1);
   beta_eh_bac ~ normal(0, 1);
 
-  // Cross-immunity: centred at zero (no a priori direction)
+  // Cross-immunity
   cross_ih_trans ~ normal(0, 1);
   cross_ih_susc  ~ normal(0, 1);
 
-  // Observation model: user-specified Beta priors are placed on the
-  // *probability scale* (obs_params), not on obs_raw.  Because obs_params
+  // Observation model: Beta priors are placed on the
+  // probability scale (obs_params), not on obs_raw.  Because obs_params
   // is a linear function of obs_raw with constant slope (ub - lb), the
   // change-of-variables Jacobian is constant in the parameters and can be
-  // omitted.  We use target += beta_lpdf(...) to suppress Stan's warning
-  // about sampling statements applied to transformed quantities.
+  // omitted. 
   for (k in 1:n_obs_type) {
     for (s in 1:6) {
       target += beta_lpdf(obs_params[k, s] | obs_prob_alpha[k, s],
@@ -515,7 +516,7 @@ model {
 // =============================================================================
 generated quantities {
 
-  // Per-household log-likelihoods for LOO-CV.
+  // Per-household log-likelihoods (for LOO-CV.)
   vector[n_hh] llik_final;
 
   {
