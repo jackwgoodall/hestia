@@ -1,5 +1,5 @@
 // =============================================================================
-// Joint SIRS-SIS Hidden Markov Model (now with reduce_sum parallelisation)
+// Joint SIRS-SIS Hidden Markov Model (now with reduce_sum parallelisation.........)
 //
 // Joint state space (6 states):
 //   1: (S_v, S_b)   Viral susceptible,  Bacterial susceptible
@@ -270,7 +270,7 @@ functions {
 
             // Bacterial acquisition: S_b -> I_b
             trans_temp[2, 1] = p_bac_base;  // (S_v,S_b) -> (S_v,I_b)
-            trans_temp[4, 3] = p_bac_susc;  // (I_v,S_b) -> (I_v,I_b)  [i.e. enhanced]
+            trans_temp[4, 3] = p_bac_susc;  // (I_v,S_b) -> (I_v,I_b)  [i.e. enhanced/reduced]
             trans_temp[6, 5] = p_bac_base;  // (R_v,S_b) -> (R_v,I_b)
 
             // Bacterial recovery: I_b -> S_b
@@ -353,10 +353,10 @@ data {
   array[n_obs_type, 6] real<lower=0> obs_prob_alpha;
   array[n_obs_type, 6] real<lower=0> obs_prob_beta;
 
-  // ---- Bounds on obs_params, used to break the label-switching symmetry ----
+  // ---- Bounds on obs_params, used to break the pesky label-switching symmetry ----
   // For "negative" states (test should be negative)  set [0,   0.5]
   // For "positive" states (test should be positive)  set [0.5, 1  ]
-  // The R helper derives these automatically from the prior mean.
+  // (The R helper derives these automatically from the prior mean.)
   array[n_obs_type, 6] real<lower=0, upper=1> obs_lb;
   array[n_obs_type, 6] real<lower=0, upper=1> obs_ub;
 
@@ -387,8 +387,8 @@ parameters {
 
   // ---- Cross-immunity ----
   // Logit-scale additive effects on bacterial transmission/susceptibility.
-  real cross_ih_trans;   // co-infected transmitter -> ↑ bacterial transmissibility
-  real cross_ih_susc;    // I_v recipient -> ↑ bacterial susceptibility (IH + EH)
+  real cross_ih_trans;   // co-infected transmitter -> modifiy bacterial transmissibility
+  real cross_ih_susc;    // I_v recipient -> modify. bacterial susceptibility (IH + EH)
 
   // ---- Observation model ----
   // Re-parameterised on [0,1]; the actual probability obs_params is
@@ -462,7 +462,7 @@ model {
   logit_gamma_b ~ normal(-2, 1);   // prior mean gamma_b ~= 0.12
   logit_rho     ~ normal(-3, 1);   // prior mean rho     ~= 0.05
 
-  // Baseline IH/EH probabilities: weakly informative on logit scale
+  // Baseline IH/EH probabilities: weakly informative ( logit scale)
   beta0_ih_vir ~ normal(-4, 2);
   beta0_ih_bac ~ normal(-4, 2);
   beta0_eh_vir ~ normal(-4, 2);
@@ -478,11 +478,8 @@ model {
   cross_ih_trans ~ normal(0, 1);
   cross_ih_susc  ~ normal(0, 1);
 
-  // Observation model: Beta priors are placed on the
-  // probability scale (obs_params), not on obs_raw.  Because obs_params
-  // is a linear function of obs_raw with constant slope (ub - lb), the
-  // change-of-variables Jacobian is constant in the parameters and can be
-  // omitted. 
+  // Observation model : Beta priors are placed on the
+  // probability scale (obs_params), not on obs_raw.
   for (k in 1:n_obs_type) {
     for (s in 1:6) {
       target += beta_lpdf(obs_params[k, s] | obs_prob_alpha[k, s],
