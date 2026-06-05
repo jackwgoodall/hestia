@@ -1,0 +1,322 @@
+---
+title: "Simulation Viral-Bacterial SIRS-SIS Model Results"
+author: "Jack Goodall"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+source("../R/simulation.R")
+source("../R/joint_model_functions.R")
+
+library(cmdstanr)
+library(posterior)
+library(tidyverse)
+library(patchwork)
+
+set.seed(1234)
+```
+
+# Joint SIRS-SIS Model
+
+This vignette fits the joint viral (SIRS) / bacterial (SIS) household transmission
+model and visualises the posterior against the simulation truth.
+
+The key parameters recovered are:
+
+- `gamma_v` — daily viral recovery probability (I\_v → R\_v)
+- `gamma_b` — daily bacterial clearance probability (I\_b → S\_b)
+- `rho` — daily viral waning-immunity probability (R\_v → S\_v)
+- `ih_prob_vir`, `eh_prob_vir` — baseline viral IH / EH acquisition
+- `ih_prob_bac`, `eh_prob_bac` — baseline bacterial IH / EH acquisition
+- `cross_ih_trans` — co-infected transmitter effect on bacterial transmission (logit scale)
+- `cross_ih_susc` — virally-infected recipient susceptibility boost (logit scale)
+- `obs_params[k, s]` — observation probabilities per test per joint state
+
+---
+
+
+```{r load-fit}
+first_full_mod <- readRDS("~/Library/Mobile Documents/com~apple~CloudDocs/Documents/GitHub/hestia/JG_HPC/data/first_full_mod.RDS")
+draws_full <- as_draws_array(first_full_mod, variable = c("gamma_v"))
+
+```
+
+---
+
+## 4. Rates: recovery and waning immunity
+
+```{r rates}
+draws_rates <- first_full_mod$draws(c("gamma_v", "gamma_b", "rho")) %>%
+  summarise_draws(median, ~quantile(.x, probs = c(0.025, 0.975))) %>%
+  mutate(
+    true_val = c(1/6, 1/12, 1/10),
+    label    = c("Viral recovery\n(gamma_v)",
+                 "Bacterial clearance\n(gamma_b)",
+                 "Viral waning\n(rho)")
+  )
+
+ggplot(draws_rates, aes(x = label)) +
+  geom_point(aes(y = median), size = 3) +
+  geom_errorbar(aes(ymin = `2.5%`, ymax = `97.5%`), width = 0.2) +
+  geom_point(aes(y = true_val), colour = "red", shape = 18, size = 4) +
+  labs(title = "Daily transition rates",
+       subtitle = "Red diamond = simulation truth",
+       x = NULL, y = "Probability per day") +
+  theme_bw()
+```
+
+---
+
+## 5. Baseline acquisition probabilities
+
+```{r baseline-acq}
+draws_acq <- first_full_mod$draws(c("beta0_ih_vir", "beta0_eh_vir",
+                             "beta0_ih_bac", "beta0_eh_bac")) %>%
+  summarise_draws(median, ~quantile(.x, probs = c(0.025, 0.975))) %>%
+  mutate(
+    median = plogis(median),
+    `2.5%` = plogis(`2.5%`),
+    `97.5%` = plogis(`97.5%`)
+  ) %>%
+  mutate(
+    pathogen = c(rep("Viral", 2), rep("Bacterial", 2)),
+    route    = rep(c("IH", "EH"), 2),
+    true_val = c(0.03, 0.02, 0.01, 0.04)
+  )
+
+ggplot(draws_acq, aes(x = route, colour = pathogen)) +
+  geom_point(aes(y = median), size = 3, position = position_dodge(0.4)) +
+  geom_errorbar(aes(ymin = `2.5%`, ymax = `97.5%`), width = 0.2,
+                position = position_dodge(0.4)) +
+  geom_point(aes(y = true_val), shape = 18, size = 4, colour = "red",
+             position = position_dodge(0.4)) +
+  labs(title = "Baseline daily acquisition probabilities",
+       subtitle = "Red diamond = simulation truth",
+       x = "Transmission route", y = "Probability per day",
+       colour = "Pathogen") +
+  theme_bw()
+```
+
+---
+
+## 6. Age covariate effects (odds ratios)
+
+Age effects are shared across IH and EH within each pathogen.
+
+```{r age-covs}
+k_age_vars_vir <- paste0("beta_ih_vir[", 1:3, "]")
+k_age_vars_bac <- paste0("beta_ih_bac[", 1:3, "]")
+
+draws_age <-  first_full_mod$draws(c(k_age_vars_vir, k_age_vars_bac)) %>%
+  summarise_draws(median, ~quantile(.x, probs = c(0.025, 0.975))) %>%
+  mutate(
+    pathogen  = rep(c("Viral", "Bacterial"), each = 3),
+    age_group = rep(paste0("Age ", 2:4, " vs 1"), 2),
+    true_val  = exp(c(-0.17741, -0.38282, -0.41593,
+                #  c(rep(exp(-0.17741), 3),   exp(c(  # viral age ORs
+                  -0.3988, -0.7536, -0.9236)))  # bacterial age ORs
+
+ggplot(draws_age, aes(x = age_group, colour = pathogen)) +
+  geom_point(aes(y = exp(median)), size = 3, position = position_dodge(0.4)) +
+  geom_errorbar(aes(ymin = exp(`2.5%`), ymax = exp(`97.5%`)), width = 0.2,
+                position = position_dodge(0.4)) +
+  geom_point(aes(y = true_val), shape = 18, size = 4, colour = "red",
+             position = position_dodge(0.4)) +
+  geom_hline(yintercept = 1, lty = "dashed", colour = "grey50") +
+  scale_y_log10() +
+  facet_wrap(~pathogen) + 
+  labs(title = "Age effects on acquisition (odds ratios vs age group 1)",
+       subtitle = "Red diamond = simulation truth",
+       x = NULL, y = "Odds ratio (log scale)", colour = "Pathogen") +
+  theme_bw()
+```
+
+---
+
+## 7. Seasonal EH spline effect
+
+```{r seasonal}
+# Extract posterior draws of the spline EH coefficients
+spline_vars_vir <- paste0("beta_eh_vir[", 1:5, "]")
+spline_vars_bac <- paste0("beta_eh_bac[", 1:5, "]")
+
+coef_draws_vir <- first_full_mod$draws(c(spline_vars_vir)) %>% as_draws_matrix()
+coef_draws_bac <- first_full_mod$draws(c(spline_vars_bac)) %>% as_draws_matrix()
+
+# Posterior median seasonal log-OR curve across the simulation horizon
+median_coefs_vir <- apply(as.matrix(coef_draws_vir[, seq_len(5)]), 2, median)
+median_coefs_bac <- apply(as.matrix(coef_draws_bac[, seq_len(5)]), 2, median)
+
+# True curves used in simulation
+true_coefs_bac <- c(-2.0589174, 0.7798747, -0.1790857, -0.8035356, 1.0044010)
+
+# Spline bases
+basis_bac <- unname(as.matrix(
+  splines::ns(seq_len(tmax), df = 6, knots = c(125, 211, 296, 349))
+))
+
+seasonal_df <- tibble(
+  day          = seq_len(tmax),
+  bac_est      = as.vector(basis_bac %*% median_coefs_bac),
+  bac_true     = as.vector(basis_bac %*% true_coefs_bac)
+) %>%
+  pivot_longer(-day,
+               names_to  = c("pathogen", "type"),
+               names_sep = "_") %>%
+  mutate(pathogen = recode(pathogen, viral = "Viral", bac = "Bacterial"))
+
+ggplot(seasonal_df, aes(x = day, y = value,
+                        colour = pathogen, lty = type)) +
+  geom_line() +
+  scale_linetype_manual(values = c(est = "solid", true = "dashed"),
+                        labels = c(est = "Posterior median", true = "Simulation truth")) +
+  labs(title = "Seasonal EH spline effect (log-OR scale)",
+       x = "Day", y = "Spline contribution to log-odds",
+       colour = "Pathogen", lty = NULL) +
+  theme_bw()
+```
+
+---
+
+## 8. Cross-infection parameters
+
+```{r cross-immunity}
+draws_cross <- first_full_mod$draws(c("cross_ih_trans", "cross_ih_susc")) %>%
+  summarise_draws("median", ~quantile2(.x, probs = c(0.025, 0.975))) %>%
+  mutate(
+    label    = c("Transmitter boost\n(cross_ih_trans)",
+                 "Susceptibility boost\n(cross_ih_susc)"),
+    true_val = c(0.3, 0.2)
+  )
+
+ggplot(draws_cross, aes(x = label)) +
+  geom_point(aes(y = median), size = 3) +
+  geom_errorbar(aes(ymin = q2.5, ymax = q97.5), width = 0.2) +
+  geom_point(aes(y = true_val), colour = "red", shape = 18, size = 4) +
+  geom_hline(yintercept = 0, lty = "dashed", colour = "grey50") +
+  labs(title = "Interaction effects (logit scale)",
+       subtitle = "Red diamond = simulation truth  |  Zero = no effect",
+       x = NULL, y = "Log-odds additive effect") +
+  theme_bw()
+```
+
+---
+
+## 9. Observation probabilities
+
+```{r obs-params}
+state_labels <- c("Sv_Sb", "Sv_Ib", "Iv_Sb", "Iv_Ib", "Rv_Sb", "Rv_Ib")
+
+# Explicit grid so test/state labels stay aligned with summarise_draws output
+# regardless of how the posterior package orders the returned variables.
+obs_grid <- data.frame(
+  k = rep(1:2, each = 6),
+  s = rep(1:6, 2)
+)
+obs_vars <- sprintf("obs_params[%d,%d]", obs_grid$k, obs_grid$s)
+
+# True observation probabilities per (test, state) — named for safe lookup
+true_obs <- list(
+  "Viral PCR"     = c(Sv_Sb = 0.01, Sv_Ib = 0.01, Iv_Sb = 0.90,
+                      Iv_Ib = 0.90, Rv_Sb = 0.01, Rv_Ib = 0.01),
+  "Bacterial PCR" = c(Sv_Sb = 0.01, Sv_Ib = 0.95, Iv_Sb = 0.01,
+                      Iv_Ib = 0.95, Rv_Sb = 0.01, Rv_Ib = 0.95)
+)
+
+draws_obs <- first_full_mod$draws(obs_vars) %>%
+  summarise_draws("median", ~quantile(.x, probs = c(0.025, 0.975))) %>%
+  mutate(
+    test  = ifelse(obs_grid$k == 1, "Viral PCR", "Bacterial PCR"),
+    state = state_labels[obs_grid$s]
+  ) %>%
+  rowwise() %>%
+  mutate(true_val = true_obs[[test]][[state]]) %>%
+  ungroup()
+
+# Fix state ordering on x-axis to match biological state-space logic
+state_order <- c("Sv_Sb", "Sv_Ib", "Iv_Sb", "Iv_Ib", "Rv_Sb", "Rv_Ib")
+draws_obs <- draws_obs %>%
+  mutate(state = factor(state, levels = state_order))
+
+ggplot(draws_obs, aes(x = state)) +
+  geom_point(aes(y = median), size = 3) +
+  geom_errorbar(aes(ymin = `2.5%`, ymax = `97.5%`), width = 0.2) +
+  geom_point(aes(y = true_val), colour = "red", shape = 18, size = 4) +
+  facet_wrap(~test, nrow = 2) +
+  labs(title = "Observation probabilities P(positive | state)",
+       subtitle = "Red diamond = simulation truth",
+       x = "Joint state", y = "P(positive)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+---
+
+## 10. Posterior trace plots (key parameters)
+
+A quick visual check for convergence.
+
+```{r traces, fig.height=8}
+trace_vars <- c("gamma_v", "gamma_b", "rho",
+                "cross_ih_trans", "cross_ih_susc")
+
+first_full_mod$draws(c(trace_vars)) %>%
+  as_draws_df() %>%
+  pivot_longer(cols = all_of(trace_vars),
+               names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = .iteration, y = value, colour = factor(.chain))) +
+  geom_line(alpha = 0.7, linewidth = 0.4) +
+  facet_wrap(~variable, scales = "free_y", ncol = 1) +
+  labs(title = "Trace plots — key parameters",
+       x = "Iteration", y = NULL, colour = "Chain") +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+---
+
+## 11. Numerical summary
+
+```{r summary-table}
+key_vars <- c("gamma_v", "gamma_b", "rho",
+              "cross_ih_trans", "cross_ih_susc")
+
+first_full_mod$draws(c(key_vars)) %>%
+  summarise_draws(
+    "mean", "median", "sd",
+    ~quantile2(.x, probs = c(0.025, 0.975)),
+    "rhat", "ess_bulk"
+  ) %>%
+  mutate(across(where(is.numeric), \(x) round(x, 3))) %>%
+  knitr::kable(caption = "Posterior summary — key parameters")
+```
+
+
+--- 
+
+## 12. Diagnosing the transmission coefficients 
+
+```{r}
+draws <- first_transvir_mod$draws(
+  variables = c("cross_ih_susc", "cross_ih_trans"),
+  format = "matrix"   
+)
+
+plot(draws[, "cross_ih_susc"], draws[, "cross_ih_trans"],
+     xlab = "cross_ih_susc", ylab = "cross_ih_trans",
+     pch = 16, col = rgb(0, 0, 0, 0.3))
+
+
+draws2 <- first_full_mod$draws(
+  variables = c("cross_ih_susc", "cross_ih_trans"),
+  format = "matrix"   
+)
+
+plot(draws2[, "cross_ih_susc"], draws2[, "cross_ih_trans"],
+     xlab = "cross_ih_susc", ylab = "cross_ih_trans",
+     pch = 16, col = rgb(0, 0, 1, 0.3))
+
+ggplot(draws, aes(x = cross_ih_susc, y = cross_ih_trans)) + geom_point() + geom_smooth(method = "lm")
+```
+

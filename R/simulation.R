@@ -1383,6 +1383,384 @@ sim_sis_from_existing <- function(base_complete_obs,
 }
 
 
+# =============================================================================
+# VIP-aware simulation of a SIS process layered on an existing SIRS simulation
+#
+# Key extension over sim_sis_from_existing:
+#   vip_lambda — daily decay rate of the Viral Inflammatory Phase (VIP) score.
+#                When vip_lambda = 0 (default) the behaviour is identical to
+#                the binary cross-immunity in sim_sis_from_existing.
+#
+# The VIP score z_t for each person is maintained across time:
+#   - z = 1 while the person is in an active A state (a_infectious_states)
+#   - z decays geometrically after A clearance: z_{t+1} = z_t * exp(-vip_lambda)
+#
+# z modulates all three cross-pathogen effects continuously:
+#   - cross_eh_coef      applied to recipient's z  (EH susceptibility boost)
+#   - cross_ih_susc_coef applied to recipient's z  (IH susceptibility boost)
+#   - cross_ih_trans_coef applied to transmitter's z (IH transmissibility boost)
+#
+# The output dataframe includes a `vip_z` column (z score at each time point)
+# so that the VIP-enhanced bacterial PCR sensitivity can be applied downstream:
+#   bac_pcr_pos <- rbinom(n, 1,
+#     ifelse(state_b == 2,
+#            plogis(qlogis(sens_bac) + delta_bac * vip_z),
+#            fpr_bac))
+# =============================================================================
+
+#' @title Simulate SIS pathogen B with VIP-aware cross-immunity
+#'
+#' @description
+#' Extends \link{sim_sis_from_existing} with a continuously decaying Viral
+#' Inflammatory Phase (VIP) score. The VIP score is 1 during active A infection
+#' and decays geometrically after clearance at rate \code{vip_lambda}.  All
+#' three cross-pathogen effects (\code{cross_eh_coef}, \code{cross_ih_susc_coef},
+#' \code{cross_ih_trans_coef}) are applied as logit-scale multipliers of the
+#' continuous z score rather than binary indicators.
+#'
+#' Setting \code{vip_lambda = 0} (the default) recovers the binary behaviour of
+#' \link{sim_sis_from_existing} exactly.
+#'
+#' @param base_complete_obs Complete observation data frame from a prior SIRS
+#'   simulation (output of \link{sim_sirs}).
+#' @param base_x Optional covariate data frame (pid_global + covariate columns).
+#' @param a_complete_obs Complete observation data frame for pathogen A (must
+#'   include \code{pid_global}, \code{t}, \code{state}).
+#' @param eh_prob Baseline extra-household infection probability.
+#' @param ih_prob Baseline per-contact intra-household infection probability.
+#' @param gamma Daily bacterial recovery probability.
+#' @param covs_eh,covs_ih,covs_gamma Covariate coefficient vectors or named
+#'   subsets; see \link{sim_sis_from_existing}.
+#' @param obs_prob List of emission probability vectors, one per test type.
+#'   Each element \code{c(p_neg_state, p_pos_state)}.
+#' @param start_prob Initial state probabilities \code{c(p_S, p_I)}.
+#' @param complete_enroll If \code{FALSE}, return only enrolled participants.
+#' @param season_type,season_k,season_period,season_df,season_knots,
+#'   season_coefs_eh,season_coefs_ih  Seasonality arguments (same as
+#'   \link{sim_sis_from_existing}).
+#' @param a_infectious_states Integer vector of A states that trigger VIP
+#'   (z = 1). Default \code{2}.
+#' @param vip_lambda Daily VIP decay rate after A clearance. \code{0} = binary
+#'   (no decay); \code{1/14} ≈ 14-day half-life.
+#' @param cross_eh_coef    Logit-scale boost to EH susceptibility scaled by z.
+#' @param cross_ih_susc_coef  Logit-scale boost to IH susceptibility scaled by
+#'   recipient's z.
+#' @param cross_ih_trans_coef Logit-scale boost to IH transmissibility scaled
+#'   by transmitter's z.
+#'
+#' @return A list with \code{obs} and \code{complete_obs} (and \code{x} if
+#'   covariates were supplied). \code{complete_obs} includes a \code{vip_z}
+#'   column giving each person's VIP score at each time point.
+#' @export
+sim_sis_from_existing_vip <- function(
+    base_complete_obs,
+    base_x              = NULL,
+    a_complete_obs      = NULL,
+    eh_prob             = 0.05,
+    ih_prob             = 0.05,
+    gamma               = 1/3,
+    covs_eh             = NULL,
+    covs_ih             = NULL,
+    covs_gamma          = NULL,
+    obs_prob            = list(c(0.05, 0.95), c(0.01, 0.8)),
+    start_prob          = c(0.8, 0.2),
+    complete_enroll     = TRUE,
+    season_type         = c("fourier", "spline"),
+    season_k            = 0,
+    season_period       = 365,
+    season_df           = 6,
+    season_knots        = NULL,
+    season_coefs_eh     = NULL,
+    season_coefs_ih     = NULL,
+    a_infectious_states = 2,
+    vip_lambda          = 0,
+    cross_eh_coef       = 0,
+    cross_ih_susc_coef  = 0,
+    cross_ih_trans_coef = 0) {
+
+  # ---- Validation (shared with sim_sis_from_existing) -----------------------
+  req_cols <- c("t", "part_id", "pid_global", "enroll", "hh_size", "hh_id")
+  if (!all(req_cols %in% names(base_complete_obs)))
+    stop("base_complete_obs must contain: t, part_id, pid_global, enroll, hh_size, hh_id.")
+  if (!is.numeric(gamma) || length(gamma) != 1 || gamma < 0 || gamma > 1)
+    stop("gamma must be a single probability in [0, 1].")
+  if (!is.numeric(vip_lambda) || length(vip_lambda) != 1 || vip_lambda < 0)
+    stop("vip_lambda must be a non-negative scalar.")
+
+  # ---- Household / person layout -------------------------------------------
+  base_design <- base_complete_obs %>%
+    distinct(hh_id, hh_size, part_id, pid_global, enroll) %>%
+    arrange(hh_id, part_id)
+  hh_tbl   <- base_design %>% distinct(hh_id, hh_size) %>% arrange(hh_id)
+  hh_size  <- hh_tbl$hh_size
+  n_hh     <- nrow(hh_tbl)
+  tmax     <- max(base_complete_obs$t)
+  n_people <- nrow(base_design)
+
+  # ---- Covariates ----------------------------------------------------------
+  if (is.null(base_x)) {
+    x <- matrix(nrow = n_people, ncol = 0)
+    x_colnames <- character(0)
+  } else {
+    if (!("pid_global" %in% names(base_x))) stop("base_x must include pid_global.")
+    x_df <- base_x %>% distinct(pid_global, .keep_all = TRUE) %>% arrange(pid_global)
+    if (nrow(x_df) != n_people) stop("base_x must have one row per pid_global.")
+    x <- as.matrix(x_df[, setdiff(names(x_df), "pid_global"), drop = FALSE])
+    x_colnames <- colnames(x)
+  }
+  kx <- ncol(x)
+  resolve_covs <- function(covs, arg_name) {
+    if (is.null(covs)) return(rep(0, kx))
+    if (kx == 0) {
+      if (length(covs) == 0) return(numeric(0))
+      stop(paste0(arg_name, " must be NULL/empty when base_x has no covariate columns."))
+    }
+    if (!is.null(names(covs)) && any(nzchar(names(covs)))) {
+      out <- rep(0, kx); names(out) <- x_colnames
+      bad <- setdiff(names(covs), x_colnames)
+      if (length(bad) > 0) stop(paste0(arg_name, " has unknown covariate names: ", paste(bad, collapse = ", ")))
+      out[names(covs)] <- as.numeric(covs)
+      return(unname(out))
+    }
+    if (length(covs) != kx) stop(paste0(arg_name, " must be length ", kx, " or a named subset."))
+    as.numeric(covs)
+  }
+  covs_eh    <- resolve_covs(covs_eh,    "covs_eh")
+  covs_ih    <- resolve_covs(covs_ih,    "covs_ih")
+  covs_gamma <- resolve_covs(covs_gamma, "covs_gamma")
+
+  # ---- Seasonality ---------------------------------------------------------
+  season_type <- match.arg(season_type)
+  if (season_type == "fourier") {
+    season_effect <- function(d, coefs, period) {
+      if (is.null(coefs) || length(coefs) == 0) return(0)
+      if ((length(coefs) %% 2) != 0) stop("season_coefs must have even length.")
+      k <- length(coefs) / 2; harm <- seq_len(k)
+      sum(coefs[seq(1, length(coefs), by=2)] * sin(2*pi*harm*d/period) +
+            coefs[seq(2, length(coefs), by=2)] * cos(2*pi*harm*d/period))
+    }
+    if (season_k > 0) {
+      if (is.null(season_coefs_eh)) season_coefs_eh <- rep(0, 2*season_k)
+      if (is.null(season_coefs_ih)) season_coefs_ih <- rep(0, 2*season_k)
+    }
+  } else {
+    day_seq      <- seq_len(tmax)
+    season_basis <- if (is.null(season_knots)) splines::ns(day_seq, df=season_df) else
+      splines::ns(day_seq, knots=season_knots)
+    season_basis <- unname(as.matrix(season_basis))
+    n_basis <- ncol(season_basis)
+    if (is.null(season_coefs_eh)) season_coefs_eh <- rep(0, n_basis)
+    if (is.null(season_coefs_ih)) season_coefs_ih <- rep(0, n_basis)
+    season_effect <- function(d, coefs, period) {
+      if (is.null(coefs) || length(coefs) == 0) return(0)
+      sum(season_basis[d, ] * coefs)
+    }
+  }
+
+  # ---- Individual random effects -------------------------------------------
+  u_vec <- base_complete_obs %>%
+    filter(t == min(t)) %>% arrange(pid_global) %>% pull(u_pid)
+  if (length(u_vec) != n_people || any(is.na(u_vec))) u_vec <- rep(0, n_people)
+
+  # ---- A-state lookup (binary: is person in an active A state?) -------------
+  if (!is.null(a_complete_obs)) {
+    if (!all(c("pid_global", "t", "state") %in% names(a_complete_obs)))
+      stop("a_complete_obs must include pid_global, t, and state.")
+    a_prev <- a_complete_obs %>%
+      transmute(pid_global = pid_global, t = t,
+                a_active = as.integer(state %in% a_infectious_states))
+  } else {
+    a_prev <- expand.grid(pid_global = seq_len(n_people), t = seq_len(tmax)) %>%
+      mutate(a_active = 0L)
+  }
+  a_map <- a_prev %>% mutate(key = paste(pid_global, t, sep = "_")) %>% select(key, a_active)
+  a_active_lookup <- setNames(a_map$a_active, a_map$key)
+
+  # ---- VIP score vector (length n_people, persists across HH loop) ----------
+  # z_vec[pid] = VIP inflammatory score at the END of the most-recently-processed day.
+  # Initialised to 0; set to 1 at d=1 for anyone currently in an active A state.
+  z_vec <- numeric(n_people)
+
+  # ---- Simulation -----------------------------------------------------------
+  complete_obs <- data.frame(
+    t = numeric(), part_id = numeric(), pid_global = numeric(),
+    enroll = numeric(), state = numeric(), hh_size = numeric(),
+    hh_id = numeric(), u_pid = numeric(), vip_z = numeric()
+  )
+
+  last_x <- 0
+  for (i in seq_len(n_hh)) {
+    hh_n       <- hh_size[i]
+    hh_members <- base_design %>% filter(hh_id == i) %>% arrange(part_id)
+    pid_vec    <- hh_members$pid_global
+    enroll_vec <- hh_members$enroll
+    part_vec   <- hh_members$part_id
+
+    for (d in seq_len(tmax)) {
+
+      if (d == 1) {
+        # ---- Initialise B states at d=1 -------------------------------------
+        new_obs <- data.frame(
+          t          = rep(d, hh_n),
+          part_id    = part_vec,
+          pid_global = pid_vec,
+          enroll     = enroll_vec,
+          state      = sample(1:2, hh_n, replace = TRUE, prob = start_prob),
+          hh_size    = rep(hh_n, hh_n),
+          hh_id      = rep(i, hh_n),
+          u_pid      = u_vec[pid_vec],
+          vip_z      = NA_real_
+        )
+        complete_obs <- bind_rows(complete_obs, new_obs)
+        prior <- new_obs$state
+
+        # Initialise z based on A states at d=1
+        a_d1 <- sapply(pid_vec, function(pid) {
+          val <- a_active_lookup[[paste(pid, 1, sep = "_")]]
+          if (is.null(val)) 0L else val
+        })
+        z_vec[pid_vec] <- as.numeric(a_d1 == 1)
+        complete_obs$vip_z[complete_obs$hh_id == i & complete_obs$t == 1] <- z_vec[pid_vec]
+
+      } else {
+        # ---- Get VIP scores at d-1 (these drive FOI at d) --------------------
+        z_prev_hh <- z_vec[pid_vec]
+
+        # ---- Simulate new B states -------------------------------------------
+        new_states <- integer(hh_n)
+
+        for (part in seq_len(hh_n)) {
+          pid  <- pid_vec[part]
+          xrow <- if (kx > 0) x[pid, ] else numeric(0)
+          z_p  <- z_prev_hh[part]   # recipient's VIP score
+
+          if (prior[part] == 1) {
+            # ---- S state: compute FOI ----------------------------------------
+            eh_lp      <- qlogis(eh_prob) +
+                          (if (kx > 0) sum(xrow * covs_eh) else 0) +
+                          u_vec[pid] +
+                          season_effect(d, season_coefs_eh, season_period) +
+                          cross_eh_coef * z_p
+
+            ih_base_lp <- qlogis(ih_prob) +
+                          (if (kx > 0) sum(xrow * covs_ih) else 0) +
+                          u_vec[pid] +
+                          season_effect(d, season_coefs_ih, season_period) +
+                          cross_ih_susc_coef * z_p    # recipient VIP boost
+
+            eh_prob_x <- plogis(eh_lp)
+
+            # Escape probability from each B-infectious household member q,
+            # each scaled by q's own VIP score (transmitter effect).
+            no_hh_inf <- 1
+            for (q in seq_len(hh_n)) {
+              if (q != part && prior[q] == 2) {
+                z_q <- z_prev_hh[q]
+                ih_trans_lp <- ih_base_lp + cross_ih_trans_coef * z_q
+                no_hh_inf   <- no_hh_inf * (1 - plogis(ih_trans_lp))
+              }
+            }
+
+            no_inf_prob    <- (1 - eh_prob_x) * no_hh_inf
+            new_states[part] <- sample(c(1, 2), 1, prob = c(no_inf_prob, 1 - no_inf_prob))
+
+          } else {
+            # ---- I state: recover --------------------------------------------
+            gamma_x <- plogis(qlogis(gamma) + if (kx > 0) sum(xrow * covs_gamma) else 0)
+            new_states[part] <- sample(c(1, 2), 1, prob = c(gamma_x, 1 - gamma_x))
+          }
+        }
+
+        # ---- Update VIP scores for d ----------------------------------------
+        # z = 1 if currently in active A state; else decay from previous z.
+        a_curr <- sapply(pid_vec, function(pid) {
+          val <- a_active_lookup[[paste(pid, d, sep = "_")]]
+          if (is.null(val)) 0L else val
+        })
+        z_new <- ifelse(a_curr == 1, 1, z_prev_hh * exp(-vip_lambda))
+        z_vec[pid_vec] <- z_new
+
+        new_obs <- data.frame(
+          t          = rep(d, hh_n),
+          part_id    = part_vec,
+          pid_global = pid_vec,
+          enroll     = enroll_vec,
+          state      = new_states,
+          hh_size    = rep(hh_n, hh_n),
+          hh_id      = rep(i, hh_n),
+          u_pid      = u_vec[pid_vec],
+          vip_z      = z_new
+        )
+        complete_obs <- bind_rows(complete_obs, new_obs)
+        prior <- new_states
+      }
+    }
+    last_x <- last_x + hh_n
+  }
+
+  # ---- Observations --------------------------------------------------------
+  complete_obs <- complete_obs %>% arrange(hh_id, t, part_id)
+  outcome <- matrix(nrow = nrow(complete_obs), ncol = length(obs_prob))
+  colnames(outcome) <- paste0("y", seq_along(obs_prob))
+  for (i in seq_len(nrow(complete_obs))) {
+    for (j in seq_along(obs_prob)) {
+      p1 <- obs_prob[[j]][complete_obs$state[i]]
+      outcome[i, j] <- sample(c(0, 1), 1, prob = c(1 - p1, p1))
+    }
+  }
+  complete_obs <- complete_obs %>% bind_cols(as.data.frame(outcome))
+
+  if (!complete_enroll) obs <- complete_obs %>% filter(enroll == 1) else obs <- complete_obs
+  out <- list(obs = obs, complete_obs = complete_obs)
+  if (!is.null(base_x)) out$x <- base_x
+  return(out)
+}
+
+
+#' @title Simulate joint SIRS+SIS co-infection with VIP cross-immunity
+#'
+#' @description
+#' Convenience wrapper that runs \link{sim_sirs} then \link{sim_sis_from_existing_vip}.
+#' All arguments to \code{sim_sirs} go in \code{a_args}; all extra arguments to
+#' \code{sim_sis_from_existing_vip} (including \code{vip_lambda}) go in
+#' \code{b_args}.
+#'
+#' @param a_args List of arguments forwarded to \link{sim_sirs}.
+#' @param b_args List of extra arguments forwarded to
+#'   \link{sim_sis_from_existing_vip} (beyond the automatically wired
+#'   \code{base_complete_obs}, \code{base_x}, and \code{a_complete_obs}).
+#'
+#' @return A list with elements \code{infection_a}, \code{infection_b},
+#'   \code{complete_obs} (merged, with \code{state_a}, \code{state_b}, and
+#'   \code{vip_z}) and \code{obs}.
+#' @export
+sim_coinfection_ab_vip <- function(a_args = list(), b_args = list()) {
+  sim_a <- do.call(sim_sirs, a_args)
+  b_defaults <- list(
+    base_complete_obs = sim_a$complete_obs,
+    base_x            = sim_a$x,
+    a_complete_obs    = sim_a$complete_obs
+  )
+  sim_b <- do.call(sim_sis_from_existing_vip, utils::modifyList(b_defaults, b_args))
+
+  merged_complete <- sim_a$complete_obs %>%
+    select(t, part_id, pid_global, enroll, hh_size, hh_id, state_a = state) %>%
+    left_join(
+      sim_b$complete_obs %>% select(t, part_id, pid_global, state_b = state, vip_z),
+      by = c("t", "part_id", "pid_global")
+    )
+
+  merged_obs <- if (!all(sim_a$obs$enroll == 1)) merged_complete %>% filter(enroll == 1) else merged_complete
+
+  list(
+    infection_a  = sim_a,
+    infection_b  = sim_b,
+    complete_obs = merged_complete,
+    obs          = merged_obs
+  )
+}
+
+
 sim_coinfection_ab <- function(a_args = list(),
                                b_args = list()) {
   sim_a <- do.call(sim_sirs, a_args)

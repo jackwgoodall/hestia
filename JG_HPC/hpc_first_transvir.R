@@ -25,7 +25,10 @@ obs_joint <- make_joint_obs_model(
   )
 )
 
-
+obs_joint <- make_joint_obs_model(
+  viral_pcr = list(
+    
+  
 first_transvir_mod <- run_joint_model(obs_model = obs_joint,
                                   data = STPN_hestia,
                                   obs_cols = c("viral_pcr", "bacterial_pcr"),

@@ -1,18 +1,23 @@
 # =============================================================================
 # Joint SIRS-SIS model helpers
 #
-# Joint state space:
-#   1: (S_v, S_b)   2: (S_v, I_b)   3: (I_v, S_b)
-#   4: (I_v, I_b)   5: (R_v, S_b)   6: (R_v, I_b)
+# Two model variants are supported:
 #
-# Key biological features modelled:
-#   - Viral-dependent bacterial assay sensitivity:
-#       obs_params[bac_test, 4] > obs_params[bac_test, 2] because viral
-#       co-infection boosts sub-detection bacterial load above threshold.
-#   - cross_ih_trans: co-infected transmitter has enhanced bacterial
-#       transmissibility.
-#   - cross_ih_susc: virally-infected recipient has enhanced bacterial
-#       susceptibility (applied to both IH and EH routes).
+# --- 6-state model (hmm_tv_cov_reduce_sum_joint.stan) ---
+#   Joint state space:
+#     1: (S_v, S_b)   2: (S_v, I_b)   3: (I_v, S_b)
+#     4: (I_v, I_b)   5: (R_v, S_b)   6: (R_v, I_b)
+#   Use: make_joint_obs_model() → make_joint_stan_data() → run_joint_model()
+#
+# --- 8-state VIP model (hmm_tv_cov_reduce_sum_joint_vip.stan) ---
+#   Adds a Viral Inflammatory Phase (VIP) that persists beyond PCR positivity:
+#     1: (S_v, S_b, novip)   2: (S_v, I_b, novip)
+#     3: (I_v, S_b, vip)     4: (I_v, I_b, vip)
+#     5: (R_v, S_b, vip)     6: (R_v, I_b, vip)
+#     7: (R_v, S_b, novip)   8: (R_v, I_b, novip)
+#   Emission model simplified to 5 parameters (priors fixed in Stan):
+#     sens_vir, fpr_vir, sens_bac, delta_bac (VIP boost), fpr_bac
+#   Use: make_joint_stan_data_vip() → run_joint_model_vip()
 # =============================================================================
 
 
@@ -377,6 +382,260 @@ run_joint_model <- function(obs_model,
         matrix(pmin(0.98, pmax(0.02, raw)),
                nrow = n_obs_type, ncol = 6)
       }
+    )), chains)
+  }
+
+  # Compile model
+  mod <- cmdstanr::cmdstan_model(
+    file,
+    cpp_options = list(stan_threads = TRUE)
+  )
+
+  # Sample
+  mod$sample(
+    data              = dat_stan,
+    init              = init,
+    iter_warmup       = iter %/% 2,
+    iter_sampling     = iter %/% 2,
+    chains            = chains,
+    parallel_chains   = parallel_chains,
+    threads_per_chain = threads_per_chain,
+    adapt_delta       = adapt_delta,
+    max_treedepth     = max_treedepth,
+    refresh           = 100
+  )
+}
+
+
+# =============================================================================
+# 8-state VIP model helpers
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+#' @title Prepare Stan Data for 8-State VIP Joint Model
+#'
+#' @description
+#' Builds the list of inputs required by
+#' \code{hmm_tv_cov_reduce_sum_joint_vip.stan}. The VIP model has a simplified
+#' emission structure (5 parameters with priors fixed in Stan), so no
+#' \code{obs_model} argument is needed.
+#'
+#' @param data Data frame with columns \code{hh_id}, \code{part_id}, \code{t},
+#'   and one column per observation type. Observations coded 0/1/NA.
+#' @param obs_cols Character vector of observation column names, in order
+#'   (viral test first, bacterial test second).
+#' @param init_probs Length-8 numeric vector of initial state probabilities
+#'   (will be normalised). Order: Sv_Sb_novip, Sv_Ib_novip, Iv_Sb_vip,
+#'   Iv_Ib_vip, Rv_Sb_vip, Rv_Ib_vip, Rv_Sb_novip, Rv_Ib_novip.
+#' @param ih_cov 3-D array \code{[T_global, N_people, k_ih]} of IH covariates.
+#' @param eh_cov 3-D array \code{[T_global, N_people, k_eh]} of EH covariates.
+#' @param epsilon Small positive constant for transition matrix stability.
+#'
+#' @return A named list ready to pass to cmdstanr's \code{$sample()}.
+#' @export
+make_joint_stan_data_vip <- function(data,
+                                     obs_cols,
+                                     init_probs,
+                                     ih_cov,
+                                     eh_cov,
+                                     epsilon = 1e-10) {
+
+  # ---- Validate inputs -------------------------------------------------------
+  if (!all(c("hh_id", "part_id", "t") %in% names(data)))
+    stop("'data' must contain columns: hh_id, part_id, t.")
+
+  if (!all(obs_cols %in% names(data)))
+    stop("Some obs_cols not found in data.")
+
+  if (length(init_probs) != 8)
+    stop("init_probs must be a length-8 vector (one per VIP state).")
+
+  if (length(dim(ih_cov)) != 3)
+    stop("ih_cov must be a 3-D array [T_global, N_people, k_ih].")
+  if (length(dim(eh_cov)) != 3)
+    stop("eh_cov must be a 3-D array [T_global, N_people, k_eh].")
+
+  # ---- Sort and index data ---------------------------------------------------
+  dat <- data %>%
+    dplyr::arrange(hh_id, t, part_id)
+
+  dat$row_id <- seq_len(nrow(dat))
+
+  dat <- dat %>%
+    dplyr::group_by(hh_id) %>%
+    dplyr::mutate(t_rel = as.integer(t - min(t) + 1L)) %>%
+    dplyr::ungroup()
+
+  hh_sum <- dat %>%
+    dplyr::group_by(hh_id) %>%
+    dplyr::summarise(
+      hh_size      = dplyr::n_distinct(part_id),
+      hh_start_ind = min(row_id),
+      hh_end_ind   = max(row_id),
+      hh_tmin      = min(t),
+      hh_tmax      = max(t),
+      obs_per_hh   = dplyr::n(),
+      .groups      = "drop"
+    )
+
+  # ---- Recode observations (0/1 -> 1/2; NA -> -1) ---------------------------
+  y_mat <- dat %>%
+    dplyr::select(dplyr::all_of(obs_cols)) %>%
+    as.matrix()
+
+  y_mat <- apply(y_mat, 2, function(col) {
+    col_int <- as.integer(col)
+    col_int[is.na(col_int)] <- -1L
+    col_int + 1L
+  })
+  y_mat[y_mat == 0L] <- -1L
+
+  # ---- Covariate dimension checks -------------------------------------------
+  T_global <- dim(ih_cov)[1]
+  N_people <- dim(ih_cov)[2]
+  k_ih     <- dim(ih_cov)[3]
+  k_eh     <- dim(eh_cov)[3]
+
+  if (dim(eh_cov)[1] != T_global)
+    stop("ih_cov and eh_cov must have the same T_global (first dimension).")
+  if (T_global < max(hh_sum$hh_tmax))
+    stop("T_global must be >= max(hh_tmax).")
+  if (N_people != sum(hh_sum$hh_size))
+    stop("dim(ih_cov)[2] must equal sum(hh_size).")
+  if (dim(eh_cov)[2] != N_people)
+    stop("dim(eh_cov)[2] must equal sum(hh_size).")
+
+  # ---- Normalise init_probs -------------------------------------------------
+  init_probs <- init_probs / sum(init_probs)
+
+  # ---- Assemble Stan data list ----------------------------------------------
+  # Note: no obs_prob_alpha / beta / lb / ub — emission priors are in Stan.
+  list(
+    n_hh          = max(dat$hh_id),
+    hh_size       = hh_sum$hh_size,
+
+    n_obs         = nrow(dat),
+    n_obs_type    = length(obs_cols),
+    n_unique_obs  = 2L,
+    y             = y_mat,
+    part_id       = dat$part_id,
+    t_day         = dat$t_rel,
+    obs_per_hh    = hh_sum$obs_per_hh,
+    hh_start_ind  = hh_sum$hh_start_ind,
+    hh_end_ind    = hh_sum$hh_end_ind,
+    hh_tmin       = hh_sum$hh_tmin,
+    hh_tmax       = hh_sum$hh_tmax,
+
+    k_ih          = k_ih,
+    k_eh          = k_eh,
+    T_global      = T_global,
+    x_ih          = ih_cov,
+    x_eh          = eh_cov,
+
+    init_probs    = init_probs,
+    epsilon       = epsilon
+  )
+}
+
+
+# -----------------------------------------------------------------------------
+#' @title Run 8-State VIP Joint Household Transmission Model
+#'
+#' @description
+#' Compiles (if needed) and samples from the VIP joint Stan model
+#' \code{hmm_tv_cov_reduce_sum_joint_vip.stan}. The emission model is
+#' simplified to 5 parameters (sens_vir, fpr_vir, sens_bac, delta_bac,
+#' fpr_bac) with priors fixed in Stan; no \code{obs_model} is required.
+#'
+#' @param data See \link{make_joint_stan_data_vip}.
+#' @param obs_cols Character vector of observation column names (viral first,
+#'   bacterial second).
+#' @param init_probs Length-8 vector of initial state probabilities. Order:
+#'   Sv_Sb_novip, Sv_Ib_novip, Iv_Sb_vip, Iv_Ib_vip, Rv_Sb_vip, Rv_Ib_vip,
+#'   Rv_Sb_novip, Rv_Ib_novip.
+#' @param ih_cov 3-D array \code{[T_global, N, k_ih]} of IH covariates.
+#' @param eh_cov 3-D array \code{[T_global, N, k_eh]} of EH covariates.
+#' @param epsilon Small positive constant for transition matrix stability.
+#' @param file Path to the VIP Stan model file.
+#' @param iter Total MCMC iterations per chain (warmup = iter/2).
+#' @param chains Number of chains.
+#' @param parallel_chains Chains to run in parallel.
+#' @param threads_per_chain Threads per chain for reduce_sum parallelism.
+#' @param adapt_delta Target acceptance rate.
+#' @param max_treedepth Maximum NUTS tree depth.
+#' @param init Optional list of initial values (length = chains). If
+#'   \code{NULL} a sensible default is constructed.
+#'
+#' @return A \code{CmdStanMCMC} object.
+#' @export
+run_joint_model_vip <- function(data,
+                                obs_cols,
+                                init_probs,
+                                ih_cov,
+                                eh_cov,
+                                epsilon           = 1e-10,
+                                file              = system.file(
+                                  "stan", "hmm_tv_cov_reduce_sum_joint_vip.stan",
+                                  package = "hestia"
+                                ),
+                                iter              = 2000,
+                                chains            = 4,
+                                parallel_chains   = 4,
+                                threads_per_chain = 4,
+                                adapt_delta       = 0.9,
+                                max_treedepth     = 12,
+                                init              = NULL) {
+
+  if (!requireNamespace("cmdstanr", quietly = TRUE))
+    stop("cmdstanr is required. See https://mc-stan.org/cmdstanr/")
+
+  # Build data list
+  dat_stan <- make_joint_stan_data_vip(
+    data       = data,
+    obs_cols   = obs_cols,
+    init_probs = init_probs,
+    ih_cov     = ih_cov,
+    eh_cov     = eh_cov,
+    epsilon    = epsilon
+  )
+
+  dat_stan <- lapply(dat_stan, function(x) if (is.data.frame(x)) as.matrix(x) else x)
+
+  # Default initialisations
+  if (is.null(init)) {
+    k_ih <- dat_stan$k_ih
+    k_eh <- dat_stan$k_eh
+
+    init <- rep(list(list(
+      # Viral dynamics
+      logit_gamma_v   = qlogis(1/6),     # ~6-day viral infection
+      logit_rho       = qlogis(1/30),    # ~30-day immunity window
+      beta0_ih_vir    = qlogis(0.03),
+      beta0_eh_vir    = qlogis(0.02),
+      beta_ih_vir     = rep(0, k_ih),
+      beta_eh_vir     = rep(0, k_eh),
+
+      # Bacterial dynamics
+      logit_gamma_b   = qlogis(1/12),    # ~12-day bacterial carriage
+      beta0_ih_bac    = qlogis(0.01),
+      beta0_eh_bac    = qlogis(0.04),
+      beta_ih_bac     = rep(0, k_ih),
+      beta_eh_bac     = rep(0, k_eh),
+
+      # VIP waning: ~21-day inflammatory window (informed by KM curve)
+      logit_lambda    = qlogis(1/21),
+
+      # Cross-immunity: start at no effect
+      cross_ih_trans  = 0,
+      cross_ih_susc   = 0,
+
+      # Emission model (logit scale; constraints enforced in parameters block)
+      # logit_sens_* >= 0 (sens > 0.5), logit_fpr_* <= 0 (fpr < 0.5)
+      logit_sens_vir  = qlogis(0.90),    # ~0.90 viral sensitivity
+      logit_fpr_vir   = qlogis(0.02),    # ~0.02 viral FPR
+      logit_sens_bac  = qlogis(0.90),    # ~0.90 bacterial sensitivity
+      delta_bac       = 0,               # no initial VIP detectability boost
+      logit_fpr_bac   = qlogis(0.02)     # ~0.02 bacterial FPR
     )), chains)
   }
 

@@ -9,4 +9,5 @@ JG_hestia.Rproj
 JG/
 JG_HPC/data
 *.pdf
-.RDataTmp
+.RDataTmp*
+.DS_Store
