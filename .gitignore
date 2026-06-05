@@ -11,3 +11,8 @@ JG_HPC/data
 *.pdf
 .RDataTmp*
 .DS_Store
+.DS_Store
+.github/ISSUE_TEMPLATE/bug_report.yml
+.github/ISSUE_TEMPLATE/config.yml
+.DS_Store
+.github/ISSUE_TEMPLATE/feature_request.yml
