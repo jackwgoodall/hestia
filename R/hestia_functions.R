@@ -653,12 +653,26 @@ get_transmission_details <- function(inf_model) {
 
 #' @title Make Observation Process Model
 #'
+#' @description Specifies, for each observation type (test), the probability of
+#'   a positive result in each compartment. Probabilities can be fixed or
+#'   estimated, in the same way as parameters in \link{progress} and
+#'   \link{transmit}.
+#'
 #' @param ... A series of named vectors. Each vector corresponds to an
 #'   observation type. Each entry in the vector is named for the corresponding
 #'   compartment in the infection process model. The value is the probability of
 #'   observing a positive observation given the individual is in the
-#'   compartment.
-#' @returns A list with one entry for each observation type.
+#'   compartment. A number is a fixed value and a string is the name of a
+#'   parameter to estimate; compartments sharing a name share the parameter. A
+#'   `1-` prefix gives the complement, so `"1-sp_pcr"` is the false-positive
+#'   rate for specificity `sp_pcr`. Each test can have at most one specificity,
+#'   and every other estimated parameter in that test is constrained to exceed
+#'   its false-positive rate, which rules out the mirror-image solution.
+#'   Parameter names cannot be shared between tests.
+#' @param priors A named list giving Beta(a, b) prior hyperparameters,
+#'   `c(a, b)`, for each estimated parameter. `NULL` if all values are fixed.
+#' @returns A named list with one entry for each observation type, with the
+#'   priors stored in the `"priors"` attribute.
 #'
 #' @examples
 #' # Observation process for an SIR model with two observations, PCR test
@@ -668,8 +682,16 @@ get_transmission_details <- function(inf_model) {
 #'   igg = c("S" = 0.01, "I" = 0.01, "R" = 0.8)
 #' )
 #'
+#' @examples
+#' # Estimate PCR sensitivity and specificity, keeping IgG fixed.
+#' make_observation_model(
+#'   pcr = c("S" = "1-sp_pcr", "I" = "se_pcr", "R" = "1-sp_pcr"),
+#'   igg = c("S" = 0.01, "I" = 0.01, "R" = 0.8),
+#'   priors = list(se_pcr = c(9, 1), sp_pcr = c(19, 1))
+#' )
+#'
 #' @export
-make_observation_model <- function(...) {
+make_observation_model <- function(..., priors = NULL) {
   .dots <- list(...)
 
   # Entry-level input validation
@@ -684,22 +706,81 @@ make_observation_model <- function(...) {
     check_observation(.dots[[i]], nm = obs_names[i])
   }
 
-  ops <- list()
-  for (i in seq_along(.dots)) {
-    op <- matrix(nrow = 2, ncol = length(.dots[[i]]))
-    op[1, ] <- 1 - .dots[[i]]
-    op[2, ] <- .dots[[i]]
-    rownames(op) <- c("neg_obs", "pos_obs")
-    colnames(op) <- names(.dots[[i]])
-    ops[[i]] <- op
-  }
-  names(ops) <- names(.dots)
-
   if (length(unique(names(.dots))) < length(names(.dots))) {
     stop("Observation names must be unique")
   }
 
-  ops
+  # Checks on parameter specification
+  obs <- parse_obs_model(.dots)
+  est <- unique(obs[!is.na(obs$param), c("test", "param", "complement")])
+  if (anyDuplicated(est$param) > 0) {
+    stop(
+      "Each observation parameter must belong to a single test and be used ",
+      "either directly or with a '1-' prefix, not both."
+    )
+  }
+  if (anyDuplicated(est$test[est$complement]) > 0) {
+    stop("Each test can have at most one specificity (a '1-' parameter).")
+  }
+
+  missing_priors <- setdiff(est$param, names(priors))
+  if (length(missing_priors) > 0) {
+    stop(
+      "Missing priors for observation parameter(s): ",
+      paste(missing_priors, collapse = ", "),
+      "."
+    )
+  }
+  unused_priors <- setdiff(names(priors), est$param)
+  if (length(unused_priors) > 0) {
+    stop(
+      "Priors supplied for unknown observation parameter(s): ",
+      paste(unused_priors, collapse = ", "),
+      "."
+    )
+  }
+  for (nm in names(priors)) {
+    p <- priors[[nm]]
+    if (!is.numeric(p) || length(p) != 2 || anyNA(p) || any(p <= 0)) {
+      stop("Prior for '", nm, "' must be two positive numbers, c(a, b).")
+    }
+  }
+
+  attr(.dots, "priors") <- priors
+  .dots
+}
+
+#' @title Parse Observation Process Model
+#'
+#' @description Splits each observation entry into a fixed value or a parameter
+#'   name, flagging names given as a complement (`1-` prefix).
+#'
+#' @param obs_model named list of observation vectors, as passed to
+#'   \link{make_observation_model}
+#' @returns A data frame with one row per test and compartment and columns
+#'  - "test", the observation name
+#'  - "state", the compartment name
+#'  - "value", the fixed probability of a positive result (NA if estimated)
+#'  - "param", the parameter name without any `1-` prefix (NA if fixed)
+#'  - "complement", TRUE if the parameter was given with a `1-` prefix
+#'
+#' @keywords internal
+#' @noRd
+parse_obs_model <- function(obs_model) {
+  out <- lapply(names(obs_model), function(nm) {
+    x <- obs_model[[nm]]
+    value <- suppressWarnings(as.numeric(x))
+    param <- ifelse(is.na(value), x, NA_character_)
+    complement <- !is.na(param) & startsWith(param, "1-")
+    data.frame(
+      test = nm,
+      state = names(x),
+      value = value,
+      param = ifelse(complement, substring(param, 3), param),
+      complement = complement
+    )
+  })
+  do.call(rbind, out)
 }
 
 
@@ -789,9 +870,53 @@ make_stan_data <- function(
     }
   }
 
-  obs_array <- array(dim = c(length(obs_model), 2, length(inf_details$states)))
-  for (i in seq_along(obs_model)) {
-    obs_array[i, , ] <- obs_model[[i]]
+  # Observation process, matched to states by compartment name
+  states <- inf_details$states
+  for (nm in names(obs_model)) {
+    obs_states <- names(obs_model[[nm]])
+    if (anyDuplicated(obs_states) > 0 || !setequal(obs_states, states)) {
+      stop(
+        "Observation '",
+        nm,
+        "' must have exactly one entry for each compartment: ",
+        paste(states, collapse = ", "),
+        "."
+      )
+    }
+  }
+  obs <- parse_obs_model(obs_model)
+  spec_names <- unique(obs$param[obs$complement])
+  sens_names <- unique(obs$param[!is.na(obs$param) & !obs$complement])
+
+  # Lookup from each test and state: index 0 is a fixed value, i is sensitivity
+  # i and -i is the complement of specificity i
+  obs_rc <- cbind(match(obs$test, names(obs_model)), match(obs$state, states))
+  obs_fixed <- matrix(0, nrow = length(obs_model), ncol = length(states))
+  obs_fixed[obs_rc] <- ifelse(is.na(obs$value), 0, obs$value)
+  obs_index <- matrix(0, nrow = length(obs_model), ncol = length(states))
+  idx <- ifelse(
+    obs$complement,
+    -match(obs$param, spec_names),
+    match(obs$param, sens_names)
+  )
+  obs_index[obs_rc] <- ifelse(is.na(idx), 0, idx)
+
+  # Specificity from the same test as each sensitivity (0 if none)
+  sens_spec <- match(
+    obs$test[match(sens_names, obs$param)],
+    obs$test[match(spec_names, obs$param)],
+    nomatch = 0
+  )
+
+  # Beta prior hyperparameters, with parameter names as row names
+  priors <- attr(obs_model, "priors")
+  prior_matrix <- function(nms) {
+    matrix(
+      as.numeric(unlist(priors[nms])),
+      ncol = 2,
+      byrow = TRUE,
+      dimnames = list(nms, c("a", "b"))
+    )
   }
 
   # Expand multipliers if needed
@@ -846,7 +971,13 @@ make_stan_data <- function(
     hh_end_ind = hh_sum$hh_end_ind,
     hh_tmin = hh_sum$hh_tmin,
     hh_tmax = hh_sum$hh_tmax,
-    obs_prob = obs_array,
+    n_spec = length(spec_names),
+    n_sens = length(sens_names),
+    obs_fixed = obs_fixed,
+    obs_index = obs_index,
+    sens_spec = array(sens_spec),
+    spec_prior = prior_matrix(spec_names),
+    sens_prior = prior_matrix(sens_names),
     init_probs = init_probs,
     epsilon = epsilon,
     n_ih_inf_prob = ifelse(
@@ -1001,6 +1132,7 @@ run_model <- function(
   chains <- stan_opts$chains
 
   if (is.null(init)) {
+    obs_init <- init_obs_params(dat_stan)
     if (is_cov) {
       init <- rep(
         list(
@@ -1013,7 +1145,9 @@ run_model <- function(
             beta_eh = array(rep(0, dat_stan$k_eh)),
             beta_ih = array(rep(0, dat_stan$k_ih)),
             beta0_eh = array(rep(logit(0.02), dat_stan$n_eh_inf_prob)),
-            beta0_ih = array(rep(logit(0.02), dat_stan$n_ih_inf_prob))
+            beta0_ih = array(rep(logit(0.02), dat_stan$n_ih_inf_prob)),
+            spec = obs_init$spec,
+            sens = obs_init$sens
           )
         ),
         chains
@@ -1028,7 +1162,9 @@ run_model <- function(
               dat_stan$n_mult_params
             )),
             beta0_eh = array(rep(logit(0.02), dat_stan$n_eh_inf_prob)),
-            beta0_ih = array(rep(logit(0.02), dat_stan$n_ih_inf_prob))
+            beta0_ih = array(rep(logit(0.02), dat_stan$n_ih_inf_prob)),
+            spec = obs_init$spec,
+            sens = obs_init$sens
           )
         ),
         chains
@@ -1058,6 +1194,27 @@ run_model <- function(
   )
 
   rename_chains(inf_model, stan_out, save_llik, save_states)
+}
+
+#' @title Initial Values for Observation Parameters
+#'
+#' @description Starts specificities and sensitivities at their prior means.
+#'   A sensitivity whose prior mean is not above its test's false-positive rate
+#'   starts halfway between that rate and 1, so every chain starts inside the
+#'   allowed region rather than at logit(0.5), which lies exactly halfway
+#'   between the real solution and its mirror image.
+#'
+#' @param dat_stan list of Stan data generated by `make_stan_data()`
+#' @returns A list with numeric arrays "spec" and "sens".
+#'
+#' @keywords internal
+#' @noRd
+init_obs_params <- function(dat_stan) {
+  spec <- as.numeric(dat_stan$spec_prior[, 1] / rowSums(dat_stan$spec_prior))
+  sens <- as.numeric(dat_stan$sens_prior[, 1] / rowSums(dat_stan$sens_prior))
+  lower <- c(0, 1 - spec)[dat_stan$sens_spec + 1]
+  sens <- ifelse(sens > lower, sens, (1 + lower) / 2)
+  list(spec = array(spec), sens = array(sens))
 }
 
 #' @title Extract chains and renames with user-provided parameter names
@@ -1096,6 +1253,10 @@ rename_chains <- function(inf_model, model_output, save_llik, save_states) {
     inf_details$mult_eh_inf_probs == FALSE,
     1,
     length(inf_details$inf_states)
+  )
+  obs_names <- c(
+    rownames(model_output$stan_data$spec_prior),
+    rownames(model_output$stan_data$sens_prior)
   )
 
   # Extract chains. format = "draws" hands back a posterior draws_array with the
@@ -1158,6 +1319,14 @@ rename_chains <- function(inf_model, model_output, save_llik, save_states) {
     )
   }
 
+  # Pull observation parameters (sensitivities and specificities)
+  var_names_sub <- c(
+    var_names_sub,
+    grep("^spec\\[", var_names, value = TRUE),
+    grep("^sens\\[", var_names, value = TRUE)
+  )
+  var_names_new <- c(var_names_new, obs_names)
+
   # Subset to variables of interest and rename
   draws <- posterior::subset_draws(draws_full, variable = var_names_sub)
   posterior::variables(draws) <- var_names_new
@@ -1167,7 +1336,7 @@ rename_chains <- function(inf_model, model_output, save_llik, save_states) {
   # logit scale, so map them back with inv_logit(). Covariate coefficients are
   # fit on the log scale, so map them back with exp(). A draws_array has
   # dimensions [iteration, chain, variable], so we transform variable slices in
-  # place by name.
+  # place by name. Observation parameters are already on the natural scale.
   coef_names <- character(0)
   if (length(grep("beta_", var_names)) > 0) {
     coef_names <- c(
@@ -1175,7 +1344,7 @@ rename_chains <- function(inf_model, model_output, save_llik, save_states) {
       paste0(model_output$ih_cov_names, "_ih")
     )
   }
-  prob_names <- setdiff(var_names_new, coef_names)
+  prob_names <- setdiff(var_names_new, c(coef_names, obs_names))
 
   for (nm in prob_names) {
     draws[,, nm] <- inv_logit(draws[,, nm])
