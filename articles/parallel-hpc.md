@@ -1,0 +1,67 @@
+# Parallel and threaded fitting (including HPC)
+
+Fitting a `hestia` model is the expensive part of most analyses.
+`hestia` fits through
+[`flexstanr`](https://accidda.github.io/flexstanr/), which owns the
+parallelism: how cores are detected, how they are split between chains
+and threads, and how that behaves under an HPC scheduler are all
+`flexstanr` behavior and are documented once, there:
+
+- [Parallel and threaded
+  fitting](https://accidda.github.io/flexstanr/articles/parallel-hpc.html)
+  – the core-allocation rules, capping with `max_cores`, and the SLURM
+  recipes (single node, and one chain per array task).
+
+This article covers only what is specific to `hestia`.
+
+## Why threading helps a `hestia` fit
+
+A fit can use cores in two ways at once: across chains, which are
+independent and so scale near-linearly, and within a chain. The
+within-chain half is the model-specific part. `hestia`’s likelihood sums
+over households, which are conditionally independent given the
+parameters, so that sum splits across threads with Stan’s `reduce_sum`.
+Both `hmm` and `hmm_cov` are compiled for threading, so a `hestia` fit
+can always use within-chain threads when there are spare cores to give
+them.
+
+`flexstanr` fills chain-parallelism first and gives any leftover cores
+to threads, so threading only switches on when you have more cores than
+chains.
+
+## Turning it on
+
+Threading is off unless you ask for it, and you ask for it through the
+same
+[`stan_options()`](https://accidda.github.io/flexstanr/reference/stan_options.html)
+you already pass to
+[`run_model()`](https://accidda.github.io/hestia/reference/run_model.md):
+
+``` r
+
+# detect the cores this process is allowed to use and split them automatically
+fit <- run_model(
+  inf_model  = inf_process,
+  obs_model  = obs_process,
+  data       = sir,
+  init_probs = c(1 - 2 * 1e-10, 1e-10, 1e-10),
+  stan_opts  = stan_options(chains = 4, iter = 1000, threading = TRUE)
+)
+
+# cap the pool, for example to keep some cores free
+fit <- run_model(
+  ...,
+  stan_opts = stan_options(chains = 4, threading = TRUE, max_cores = 6)
+)
+
+# single-threaded (the default): manage backend parallelism yourself
+fit <- run_model(..., stan_opts = stan_options(threading = FALSE))
+```
+
+The same `stan_opts` works on a laptop and inside a scheduled job:
+`flexstanr` sizes the fit from the allocation the process actually has,
+not from the machine’s total core count. See the [flexstanr
+article](https://accidda.github.io/flexstanr/articles/parallel-hpc.html)
+for the allocation rules and job-script templates, substituting
+[`run_model()`](https://accidda.github.io/hestia/reference/run_model.md)
+for the fit call shown there.
