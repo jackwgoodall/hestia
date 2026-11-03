@@ -1,0 +1,53 @@
+# Workflow derived from https://github.com/r-lib/actions/tree/v2/examples
+# Need help debugging build failures? Start at https://github.com/r-lib/actions#where-to-find-help
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+name: pkgdown.yaml
+
+permissions: read-all
+
+jobs:
+  pkgdown:
+    runs-on: ubuntu-latest
+    # Only restrict concurrency for non-PR jobs
+    concurrency:
+      group: pkgdown-${{ github.event_name != 'pull_request' || github.run_id }}
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      # local::. is intentionally NOT installed by the setup: NAMESPACE is
+      # untracked, so the package can't be installed until the composite
+      # action's NAMESPACE bootstrap + roxygenise have all run. The
+      # "Build site" step installs it (install = TRUE) afterwards.
+      - name: Setup hestia CI environment
+        uses: ./.github/actions/setup-hestia
+        with:
+          extra-packages: any::pkgdown, any::roxygen2, any::roxyglobals, any::pkgload
+          needs: website
+
+      # install = TRUE installs the package here, AFTER the NAMESPACE bootstrap
+      # and roxygenise -- so the vignette renders against a build that has
+      # a valid NAMESPACE and registered symbols.
+      - name: Build site
+        shell: bash
+        run: just site-full
+
+      - name: Deploy to GitHub pages
+        if: github.event_name != 'pull_request'
+        uses: JamesIves/github-pages-deploy-action@v4.8.0
+        with:
+          clean: false
+          branch: gh-pages
+          folder: docs

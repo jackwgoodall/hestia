@@ -1,0 +1,28 @@
+test_that("src/RcppExports.cpp is synchronized with Stan models and Rcpp attributes", {
+  skip_if_not_installed("Rcpp")
+  skip_if_not_installed("rstantools")
+  pkg_dir <- normalizePath(
+    testthat::test_path("../.."),
+    winslash = "/",
+    mustWork = FALSE
+  )
+  cpp_file <- file.path(pkg_dir, "src", "RcppExports.cpp")
+  skip_if(
+    !file.exists(cpp_file),
+    "src/RcppExports.cpp not found (installed package)"
+  )
+
+  before <- readLines(cpp_file)
+  rstantools::rstan_config(pkg_dir)
+  Rcpp::compileAttributes(pkg_dir)
+  after <- readLines(cpp_file)
+
+  expect_identical(
+    before,
+    after,
+    info = paste(
+      "src/RcppExports.cpp is out of date.",
+      "Run 'just docs' or 'Rcpp::compileAttributes()' and commit the changes."
+    )
+  )
+})
