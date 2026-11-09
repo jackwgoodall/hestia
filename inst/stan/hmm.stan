@@ -441,8 +441,8 @@ transformed parameters {
 
   obs_prob = obs_fixed;
   for(i in 1:n_est) {
-    obs_prob[est_test[i], 2] = pos_state[i] * sens[i] + (1 - pos_state[i]) * (1 - spec[i]);
-    obs_prob[est_test[i], 1] = 1 - obs_prob[est_test[i], 2];
+    obs_prob[est_test[i], 2,] = pos_state[i,] * sens[i] + (1 - pos_state[i,]) * (1 - spec[i]);
+    obs_prob[est_test[i], 1,] = 1 - obs_prob[est_test[i], 2];
   }
 }
 
